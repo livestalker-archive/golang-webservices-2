@@ -17,17 +17,24 @@ const (
 )
 
 type ApiPoint struct {
-	Receiver string
-	Method   string
-	Params   []*ast.Field
-	InParam  string
-	Json     *JsonApi
+	Receiver      string
+	Method        string
+	Params        []*ast.Field
+	InParam       string
+	InParamFields []StructField
+	Json          *JsonApi
 }
 
 type JsonApi struct {
 	Url    string
 	Auth   bool
 	Method string
+}
+
+type StructField struct {
+	Name       string
+	Type       string
+	Validators map[string]string
 }
 
 var (
@@ -47,9 +54,26 @@ func (h *{{ $receiver }} ) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 {{- range $ix, $point := $apiPoints }}
 func (h *{{ $receiver }} ) handler{{ $point.Method }}(w http.ResponseWriter, r *http.Request) {
 	// заполнение структуры params
+	params := {{ $point.InParam }}{
+		{{- range $ix, $f :=  $point.InParamFields }}
+		{{- if index $f.Validators "paramname" }}
+		{{ $f.Name }}: FillValue("{{ $f.Validators.paramname }}", "{{ $f.Type }}", r).({{ $f.Type }}),
+		{{- else }}
+		{{ $f.Name }}: FillValue("{{ $f.Name }}", "{{ $f.Type }}", r).({{ $f.Type }}),
+		{{- end }}
+		{{- end }}
+	}
+	if r.Method == http.MethodPost {
+		r.ParseForm()
+		params := r.Form
+		fmt.Println(params)
+	} else {
+		params := r.URL.Query()
+		fmt.Println(params)
+	}
 	// валидирование параметров
 	ctx := context.Background()
-	res, err := h.{{ $point.Method }}(ctx, {{ $point.InParam }}{})
+	res, err := h.{{ $point.Method }}(ctx, params)
 	if err != nil {
 		// do something
 	}
@@ -64,6 +88,15 @@ func (h *{{ $receiver }} ) handler{{ $point.Method }}(w http.ResponseWriter, r *
 {{- end }}
 
 {{- end }}
+func FillValue(n, t string, r *http.Request) interface{}{
+	n = strings.ToLower(n)
+	val := r.FormValue(n)
+	if t == "int" {
+		res, _ := strconv.Atoi(val)
+		return res
+	}
+	return val
+}
 `))
 )
 
@@ -100,11 +133,12 @@ func findFuncDecl(node *ast.File) map[string][]ApiPoint {
 				exp := v.Recv.List[0].Type.(*ast.StarExpr)
 				name := exp.X.(*ast.Ident).Name
 				apiPoint := ApiPoint{
-					Receiver: name,
-					Method:   v.Name.Name,
-					Params:   v.Type.Params.List,
-					InParam:  getParamType(v.Type.Params.List[1]),
-					Json:     getJsonApi(comment),
+					Receiver:      name,
+					Method:        v.Name.Name,
+					Params:        v.Type.Params.List,
+					InParam:       getParamType(v.Type.Params.List[1]),
+					InParamFields: getStructFields(v.Type.Params.List[1]),
+					Json:          getJsonApi(comment),
 				}
 				if pointList, ok := res[name]; ok {
 					res[name] = append(pointList, apiPoint)
@@ -113,6 +147,34 @@ func findFuncDecl(node *ast.File) map[string][]ApiPoint {
 				}
 			}
 		}
+	}
+	return res
+}
+func getStructFields(s *ast.Field) []StructField {
+	fields := s.Type.(*ast.Ident).Obj.Decl.(*ast.TypeSpec).Type.(*ast.StructType).Fields.List
+	res := make([]StructField, len(fields))
+	for ix, f := range fields {
+		name := f.Names[0].Name
+		tag := f.Tag.Value
+		sf := StructField{
+			Name:       name,
+			Type:       f.Type.(*ast.Ident).Name,
+			Validators: parseValidators(tag),
+		}
+		res[ix] = sf
+	}
+	return res
+}
+
+func parseValidators(s string) map[string]string {
+	res := make(map[string]string)
+	s = strings.Trim(s, "`")
+	s = s[strings.Index(s, "\""):]
+	s = strings.Trim(s, "\"")
+	for _, el := range strings.Split(s, ",") {
+		parts := strings.Split(el, "=")
+		parts = append(parts, "")
+		res[parts[0]] = parts[1]
 	}
 	return res
 }
