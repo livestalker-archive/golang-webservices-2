@@ -19,6 +19,8 @@ const (
 type ApiPoint struct {
 	Receiver string
 	Method   string
+	Params   []*ast.Field
+	InParam  string
 	Json     *JsonApi
 }
 
@@ -47,7 +49,7 @@ func (h *{{ $receiver }} ) handler{{ $point.Method }}(w http.ResponseWriter, r *
 	// заполнение структуры params
 	// валидирование параметров
 	ctx := context.Background()
-	res, err := h.{{ $point.Method }}(ctx, params)
+	res, err := h.{{ $point.Method }}(ctx, {{ $point.InParam }}{})
 	if err != nil {
 		// do something
 	}
@@ -100,6 +102,8 @@ func findFuncDecl(node *ast.File) map[string][]ApiPoint {
 				apiPoint := ApiPoint{
 					Receiver: name,
 					Method:   v.Name.Name,
+					Params:   v.Type.Params.List,
+					InParam:  getParamType(v.Type.Params.List[1]),
 					Json:     getJsonApi(comment),
 				}
 				if pointList, ok := res[name]; ok {
@@ -144,4 +148,8 @@ func genOutput(outputFile string, node *ast.File, funcDecl map[string][]ApiPoint
 	fmt.Fprintln(out, `import "encoding/json"`)
 	fmt.Fprintln(out, `import "context"`)
 	codeTmpl.Execute(out, funcDecl)
+}
+
+func getParamType(p *ast.Field) string {
+	return p.Type.(*ast.Ident).Name
 }
