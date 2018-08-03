@@ -52,7 +52,13 @@ func (h *{{ $receiver }} ) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handler{{ $point.Method }}(w, r)
 {{- end }}
 	default:
-		http.NotFound(w, r)
+		w.Header().Set("Content-Type", "application/json")
+		res := map[string]string{"error": "unknown method",}
+		body, _ := json.Marshal(res)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		w.Write(body)
+		return
 	}
 }
 
@@ -80,10 +86,24 @@ func (h *{{ $receiver }} ) handler{{ $point.Method }}(w http.ResponseWriter, r *
 		return
 	}
 	ctx := context.Background()
-	res, err := h.{{ $point.Method }}(ctx, params)
+	answer, err := h.{{ $point.Method }}(ctx, params)
 	if err != nil {
-		// do something
+		w.Header().Set("Content-Type", "application/json")
+		res := map[string]string{"error": err.Error(),}
+		body, _ := json.Marshal(res)
+		w.Header().Set("Content-Type", "application/json")
+		if err, ok := err.(ApiError); ok {
+			w.WriteHeader(err.HTTPStatus)
+		} else {
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+		w.Write(body)
+		return
 	}
+	res := map[string]interface{}{
+		"error": "",
+		"response": answer,
+	}	
 	body, _ := json.Marshal(res)
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(body)
