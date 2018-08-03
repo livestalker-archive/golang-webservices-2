@@ -40,6 +40,8 @@ type StructField struct {
 	Name       string
 	CustomName string
 	Type       string
+	Default    bool
+	DefaultVal interface{}
 	Validators []Validator
 }
 
@@ -196,8 +198,6 @@ func FillValue(n, t string, r *http.Request) (interface{}, *ApiError){
 
 func Validate{{ $v.Name }}(param {{ $v.Name }}) *ApiError {
 	var e reflect.Value
-	var isReqErr bool
-	var reqErr *ApiError	
 	{{- range $ix, $f := $v.ParamFields }}
 	// validate {{ $f.Name }} field
 	{{- range $ix, $v := $f.Validators }}
@@ -206,11 +206,10 @@ func Validate{{ $v.Name }}(param {{ $v.Name }}) *ApiError {
 	// validate required status
 	e = reflect.ValueOf(param).FieldByName("{{ $f.Name }}")
 	if reflect.Zero(e.Type()).Interface() == e.Interface() {
-		reqErr = &ApiError{
+		return &ApiError{
 			HTTPStatus: http.StatusBadRequest,
 			Err: fmt.Errorf("%s must me not empty", strings.ToLower("{{ $f.Name }}")),
 		}
-		isReqErr = true
 	}
 	{{- end }}
 
@@ -272,16 +271,6 @@ func Validate{{ $v.Name }}(param {{ $v.Name }}) *ApiError {
 			HTTPStatus: http.StatusBadRequest,
 			Err: fmt.Errorf("%s must be one of [%v]", strings.ToLower("{{ $f.Name }}"), strings.Join(enumVal, ", ")),
 		}
-	}
-	{{- end }}
-
-	{{- if eq $v.Name "default" }}
-	param.{{ $f.Name }} = "{{ $v.Value }}"
-	isReqErr = false
-	reqErr = nil
-	{{- else }}
-	if isReqErr {
-		return reqErr
 	}
 	{{- end }}
 
@@ -381,11 +370,13 @@ func getStructFields(s *ast.Field) []StructField {
 	for ix, f := range fields {
 		name := f.Names[0].Name
 		tag := f.Tag.Value
-		v, cn := parseValidators(tag)
+		v, cn, isD, d := parseValidators(tag)
 		sf := StructField{
 			Name:       name,
 			Type:       f.Type.(*ast.Ident).Name,
 			CustomName: cn,
+			Default:    isD,
+			DefaultVal: d,
 			Validators: v,
 		}
 		res[ix] = sf
@@ -404,11 +395,13 @@ func getStructFields2(s *ast.TypeSpec) []StructField {
 		} else {
 			tag = ""
 		}
-		v, cn := parseValidators(tag)
+		v, cn, isD, d := parseValidators(tag)
 		sf := StructField{
 			Name:       name,
 			Type:       f.Type.(*ast.Ident).Name,
 			CustomName: cn,
+			Default:    isD,
+			DefaultVal: d,
 			Validators: v,
 		}
 		res[ix] = sf
@@ -416,11 +409,13 @@ func getStructFields2(s *ast.TypeSpec) []StructField {
 	return res
 }
 
-func parseValidators(s string) ([]Validator, string) {
+func parseValidators(s string) ([]Validator, string, bool, interface{}) {
 	res := make([]Validator, 0)
 	customName := ""
+	isDefault := false
+	var defVal interface{}
 	if s == "" {
-		return res, customName
+		return res, customName, isDefault, 0
 	}
 	s = strings.Trim(s, "`")
 	s = s[strings.Index(s, "\""):]
@@ -432,8 +427,12 @@ func parseValidators(s string) ([]Validator, string) {
 		if parts[0] == "paramname" {
 			customName = parts[1]
 		}
+		if parts[0] == "default" {
+			isDefault = true
+			defVal = parts[1]
+		}
 	}
-	return res, customName
+	return res, customName, isDefault, defVal
 }
 
 func isGenApi(decl *ast.FuncDecl) (bool, string) {
