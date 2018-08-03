@@ -25,6 +25,11 @@ type ApiPoint struct {
 	Json          *JsonApi
 }
 
+type ApiParam struct {
+	Name        string
+	ParamFields []StructField
+}
+
 type JsonApi struct {
 	Url    string
 	Auth   bool
@@ -63,24 +68,23 @@ func (h *{{ $receiver }} ) handler{{ $point.Method }}(w http.ResponseWriter, r *
 		{{- end }}
 		{{- end }}
 	}
-	if r.Method == http.MethodPost {
-		r.ParseForm()
-		params := r.Form
-		fmt.Println(params)
-	} else {
-		params := r.URL.Query()
-		fmt.Println(params)
-	}
 	// валидирование параметров
+	valErr := Validate{{ $point.InParam }}(params)
+	if valErr != nil {
+		w.Header().Set("Content-Type", "application/json")
+		res := map[string]string{"error": valErr.Error(),}
+		body, _ := json.Marshal(res)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(valErr.HTTPStatus)
+		w.Write(body)
+		return
+	}
 	ctx := context.Background()
 	res, err := h.{{ $point.Method }}(ctx, params)
 	if err != nil {
 		// do something
 	}
-	body, err := json.Marshal(res)
-	if err != nil {
-		// do something
-	}
+	body, _ := json.Marshal(res)
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(body)
 	// прочие обработки
@@ -97,6 +101,29 @@ func FillValue(n, t string, r *http.Request) interface{}{
 	}
 	return val
 }
+`))
+
+	validTmpl = template.Must(template.New("validTmpl").Parse(`
+{{- range $k, $v := . }}
+
+func Validate{{ $v.Name }}(param {{ $v.Name }}) *ApiError {
+	{{- range $ix, $f := $v.ParamFields }}
+	// validate {{ $f.Name }} field
+	{{- range $namev, $valv := $f.Validators }}
+	{{- if eq $namev "required" }}
+	e := reflect.ValueOf(param).FieldByName("{{ $f.Name }}")
+	if reflect.Zero(e.Type()) == e {
+		return &ApiError{
+			HTTPStatus: http.StatusBadRequest,
+			Err: fmt.Errorf("%s must me not empty", strings.ToLower("{{ $f.Name }}")),
+		}
+	}
+	{{- end }}
+	{{- end }}
+	{{- end }}
+	return nil
+}
+{{- end }}
 `))
 )
 
@@ -121,7 +148,37 @@ func genapi(in, out string) {
 		log.Fatalln("Can not parse go source")
 	}
 	funcDecl := findFuncDecl(node)
-	genOutput(out, node, funcDecl)
+	paramsStructNames := getParamsStructNames(funcDecl)
+	structDecl := findStructDecl(node, paramsStructNames)
+	genOutput(out, node, funcDecl, structDecl)
+}
+func getParamsStructNames(funcDecl map[string][]ApiPoint) map[string]int {
+	res := make(map[string]int)
+	for _, v := range funcDecl {
+		for _, el := range v {
+			res[el.InParam] = 1
+		}
+	}
+	return res
+}
+
+func findStructDecl(node *ast.File, paramsStructNames map[string]int) map[string]ApiParam {
+	res := make(map[string]ApiParam)
+	for _, el := range node.Decls {
+		if d, ok := el.(*ast.GenDecl); ok {
+			if structDecl, ok := d.Specs[0].(*ast.TypeSpec); ok {
+				if _, ok := paramsStructNames[structDecl.Name.Name]; !ok {
+					continue
+				}
+				p := ApiParam{
+					Name:        structDecl.Name.Name,
+					ParamFields: getStructFields2(structDecl),
+				}
+				res[structDecl.Name.Name] = p
+			}
+		}
+	}
+	return res
 }
 
 func findFuncDecl(node *ast.File) map[string][]ApiPoint {
@@ -150,6 +207,7 @@ func findFuncDecl(node *ast.File) map[string][]ApiPoint {
 	}
 	return res
 }
+
 func getStructFields(s *ast.Field) []StructField {
 	fields := s.Type.(*ast.Ident).Obj.Decl.(*ast.TypeSpec).Type.(*ast.StructType).Fields.List
 	res := make([]StructField, len(fields))
@@ -166,8 +224,32 @@ func getStructFields(s *ast.Field) []StructField {
 	return res
 }
 
+func getStructFields2(s *ast.TypeSpec) []StructField {
+	fields := s.Type.(*ast.StructType).Fields.List
+	res := make([]StructField, len(fields))
+	for ix, f := range fields {
+		name := f.Names[0].Name
+		var tag string
+		if f.Tag != nil {
+			tag = f.Tag.Value
+		} else {
+			tag = ""
+		}
+		sf := StructField{
+			Name:       name,
+			Type:       f.Type.(*ast.Ident).Name,
+			Validators: parseValidators(tag),
+		}
+		res[ix] = sf
+	}
+	return res
+}
+
 func parseValidators(s string) map[string]string {
 	res := make(map[string]string)
+	if s == "" {
+		return res
+	}
 	s = strings.Trim(s, "`")
 	s = s[strings.Index(s, "\""):]
 	s = strings.Trim(s, "\"")
@@ -201,7 +283,7 @@ func getJsonApi(comment string) *JsonApi {
 	return res
 }
 
-func genOutput(outputFile string, node *ast.File, funcDecl map[string][]ApiPoint) {
+func genOutput(outputFile string, node *ast.File, funcDecl map[string][]ApiPoint, structDecl map[string]ApiParam) {
 	out, _ := os.Create(os.Args[2])
 	defer out.Close()
 	fmt.Fprintln(out, `package `+node.Name.Name)
@@ -209,7 +291,12 @@ func genOutput(outputFile string, node *ast.File, funcDecl map[string][]ApiPoint
 	fmt.Fprintln(out, `import "net/http"`)
 	fmt.Fprintln(out, `import "encoding/json"`)
 	fmt.Fprintln(out, `import "context"`)
+	fmt.Fprintln(out, `import "reflect"`)
+	fmt.Fprintln(out, `import "fmt"`)
+	fmt.Fprintln(out, `import "strings"`)
+	fmt.Fprintln(out, `import "strconv"`)
 	codeTmpl.Execute(out, funcDecl)
+	validTmpl.Execute(out, structDecl)
 }
 
 func getParamType(p *ast.Field) string {
