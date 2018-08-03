@@ -167,13 +167,14 @@ func FillValue(n, t string, r *http.Request) interface{}{
 {{- range $k, $v := . }}
 
 func Validate{{ $v.Name }}(param {{ $v.Name }}) *ApiError {
+	var e reflect.Value
 	{{- range $ix, $f := $v.ParamFields }}
 	// validate {{ $f.Name }} field
 	{{- range $ix, $v := $f.Validators }}
 
 	{{- if eq $v.Name "required" }}
 	// validate required status
-	e := reflect.ValueOf(param).FieldByName("{{ $f.Name }}")
+	e = reflect.ValueOf(param).FieldByName("{{ $f.Name }}")
 	if reflect.Zero(e.Type()).Interface() == e.Interface() {
 		return &ApiError{
 			HTTPStatus: http.StatusBadRequest,
@@ -184,6 +185,23 @@ func Validate{{ $v.Name }}(param {{ $v.Name }}) *ApiError {
 
 	{{- if eq $v.Name "min" }}
 	// validate min value
+	{{- if eq $f.Type "string" }}
+	e = reflect.ValueOf(param).FieldByName("{{ $f.Name }}")
+	if len(e.Interface().(string)) < {{ $v.Value }} {
+		return &ApiError{
+			HTTPStatus: http.StatusBadRequest,
+			Err: fmt.Errorf("%s len must be >= %d", strings.ToLower("{{ $f.Name }}"), {{ $v.Value }}),
+		}
+	}
+	{{- else }}
+	e = reflect.ValueOf(param).FieldByName("{{ $f.Name }}")
+	if e.Interface().(int) < {{ $v.Value }} {
+		return &ApiError{
+			HTTPStatus: http.StatusBadRequest,
+			Err: fmt.Errorf("%s len must be >= %d", strings.ToLower("{{ $f.Name }}"), {{ $v.Value }}),
+		}
+	}
+	{{- end }}
 	{{- end }}
 
 	{{- end }}
