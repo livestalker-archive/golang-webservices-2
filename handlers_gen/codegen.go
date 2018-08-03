@@ -64,19 +64,30 @@ func (h *{{ $receiver }} ) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 {{- range $ix, $point := $apiPoints }}
 func (h *{{ $receiver }} ) handler{{ $point.Method }}(w http.ResponseWriter, r *http.Request) {
+	{{- if $point.Json.Auth }}
 	// 1. проверка авторизации
-	// 2. проверки метода (GET/POST)
-	// заполнение структуры params
-	params := {{ $point.InParam }}{
-		{{- range $ix, $f :=  $point.InParamFields }}
-		{{- if index $f.Validators "paramname" }}
-		{{ $f.Name }}: FillValue("{{ $f.Validators.paramname }}", "{{ $f.Type }}", r).({{ $f.Type }}),
-		{{- else }}
-		{{ $f.Name }}: FillValue("{{ $f.Name }}", "{{ $f.Type }}", r).({{ $f.Type }}),
-		{{- end }}
-		{{- end }}
+	if h, ok := r.Header["X-Auth"]; ok {
+		if h[0] != "100500" {
+			w.Header().Set("Content-Type", "application/json")
+			res := map[string]string{"error": "unauthorized",}
+			body, _ := json.Marshal(res)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			w.Write(body)
+			return
+		}
+	} else {
+		w.Header().Set("Content-Type", "application/json")
+		res := map[string]string{"error": "unauthorized",}
+		body, _ := json.Marshal(res)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		w.Write(body)
+		return
 	}
+	{{- end }}
 	{{- if $point.Json.Method }}
+	// 2. проверки метода (GET/POST)
 	if r.Method != http.MethodPost {
 		w.Header().Set("Content-Type", "application/json")
 		res := map[string]string{"error": "bad method",}
@@ -87,7 +98,17 @@ func (h *{{ $receiver }} ) handler{{ $point.Method }}(w http.ResponseWriter, r *
 		return
 	}
 	{{- end }}
-	// валидирование параметров
+	// 3. заполнение структуры params
+	params := {{ $point.InParam }}{
+		{{- range $ix, $f :=  $point.InParamFields }}
+		{{- if index $f.Validators "paramname" }}
+		{{ $f.Name }}: FillValue("{{ $f.Validators.paramname }}", "{{ $f.Type }}", r).({{ $f.Type }}),
+		{{- else }}
+		{{ $f.Name }}: FillValue("{{ $f.Name }}", "{{ $f.Type }}", r).({{ $f.Type }}),
+		{{- end }}
+		{{- end }}
+	}
+	// 4. валидирование параметров
 	valErr := Validate{{ $point.InParam }}(params)
 	if valErr != nil {
 		w.Header().Set("Content-Type", "application/json")
@@ -143,7 +164,9 @@ func Validate{{ $v.Name }}(param {{ $v.Name }}) *ApiError {
 	{{- range $ix, $f := $v.ParamFields }}
 	// validate {{ $f.Name }} field
 	{{- range $namev, $valv := $f.Validators }}
+
 	{{- if eq $namev "required" }}
+	// validate required status
 	e := reflect.ValueOf(param).FieldByName("{{ $f.Name }}")
 	if reflect.Zero(e.Type()).Interface() == e.Interface() {
 		return &ApiError{
@@ -152,6 +175,11 @@ func Validate{{ $v.Name }}(param {{ $v.Name }}) *ApiError {
 		}
 	}
 	{{- end }}
+
+	{{- if eq $namev "min" }}
+	// validate min value
+	{{- end }}
+
 	{{- end }}
 	{{- end }}
 	return nil
