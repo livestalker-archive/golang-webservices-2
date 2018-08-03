@@ -38,8 +38,14 @@ type JsonApi struct {
 
 type StructField struct {
 	Name       string
+	CustomName string
 	Type       string
-	Validators map[string]string
+	Validators []Validator
+}
+
+type Validator struct {
+	Name  string
+	Value string
 }
 
 var (
@@ -101,8 +107,8 @@ func (h *{{ $receiver }} ) handler{{ $point.Method }}(w http.ResponseWriter, r *
 	// 3. заполнение структуры params
 	params := {{ $point.InParam }}{
 		{{- range $ix, $f :=  $point.InParamFields }}
-		{{- if index $f.Validators "paramname" }}
-		{{ $f.Name }}: FillValue("{{ $f.Validators.paramname }}", "{{ $f.Type }}", r).({{ $f.Type }}),
+		{{- if $f.CustomName }}
+		{{ $f.Name }}: FillValue("{{ $f.CustomName }}", "{{ $f.Type }}", r).({{ $f.Type }}),
 		{{- else }}
 		{{ $f.Name }}: FillValue("{{ $f.Name }}", "{{ $f.Type }}", r).({{ $f.Type }}),
 		{{- end }}
@@ -163,9 +169,9 @@ func FillValue(n, t string, r *http.Request) interface{}{
 func Validate{{ $v.Name }}(param {{ $v.Name }}) *ApiError {
 	{{- range $ix, $f := $v.ParamFields }}
 	// validate {{ $f.Name }} field
-	{{- range $namev, $valv := $f.Validators }}
+	{{- range $ix, $v := $f.Validators }}
 
-	{{- if eq $namev "required" }}
+	{{- if eq $v.Name "required" }}
 	// validate required status
 	e := reflect.ValueOf(param).FieldByName("{{ $f.Name }}")
 	if reflect.Zero(e.Type()).Interface() == e.Interface() {
@@ -176,7 +182,7 @@ func Validate{{ $v.Name }}(param {{ $v.Name }}) *ApiError {
 	}
 	{{- end }}
 
-	{{- if eq $namev "min" }}
+	{{- if eq $v.Name "min" }}
 	// validate min value
 	{{- end }}
 
@@ -275,10 +281,12 @@ func getStructFields(s *ast.Field) []StructField {
 	for ix, f := range fields {
 		name := f.Names[0].Name
 		tag := f.Tag.Value
+		v, cn := parseValidators(tag)
 		sf := StructField{
 			Name:       name,
 			Type:       f.Type.(*ast.Ident).Name,
-			Validators: parseValidators(tag),
+			CustomName: cn,
+			Validators: v,
 		}
 		res[ix] = sf
 	}
@@ -296,20 +304,23 @@ func getStructFields2(s *ast.TypeSpec) []StructField {
 		} else {
 			tag = ""
 		}
+		v, cn := parseValidators(tag)
 		sf := StructField{
 			Name:       name,
 			Type:       f.Type.(*ast.Ident).Name,
-			Validators: parseValidators(tag),
+			CustomName: cn,
+			Validators: v,
 		}
 		res[ix] = sf
 	}
 	return res
 }
 
-func parseValidators(s string) map[string]string {
-	res := make(map[string]string)
+func parseValidators(s string) ([]Validator, string) {
+	res := make([]Validator, 0)
+	customName := ""
 	if s == "" {
-		return res
+		return res, customName
 	}
 	s = strings.Trim(s, "`")
 	s = s[strings.Index(s, "\""):]
@@ -317,9 +328,12 @@ func parseValidators(s string) map[string]string {
 	for _, el := range strings.Split(s, ",") {
 		parts := strings.Split(el, "=")
 		parts = append(parts, "")
-		res[parts[0]] = parts[1]
+		res = append(res, Validator{Name: parts[0], Value: parts[1]})
+		if parts[0] == "paramname" {
+			customName = parts[1]
+		}
 	}
-	return res
+	return res, customName
 }
 
 func isGenApi(decl *ast.FuncDecl) (bool, string) {
