@@ -266,6 +266,12 @@ func Validate{{ $v.Name }}(param {{ $v.Name }}) *ApiError {
 			break
 		}
 	}
+	{{- if $f.Default }}
+	if !findVal && reflect.Zero(e.Type()).Interface() == e.Interface(){
+		param.{{ $f.Name }} = "{{ $f.DefaultVal }}"
+		findVal = true
+	}
+	{{- end }}
 	if !findVal {
 		return &ApiError{
 			HTTPStatus: http.StatusBadRequest,
