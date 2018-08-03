@@ -112,7 +112,7 @@ func Validate{{ $v.Name }}(param {{ $v.Name }}) *ApiError {
 	{{- range $namev, $valv := $f.Validators }}
 	{{- if eq $namev "required" }}
 	e := reflect.ValueOf(param).FieldByName("{{ $f.Name }}")
-	if reflect.Zero(e.Type()) == e {
+	if reflect.Zero(e.Type()).Interface() == e.Interface() {
 		return &ApiError{
 			HTTPStatus: http.StatusBadRequest,
 			Err: fmt.Errorf("%s must me not empty", strings.ToLower("{{ $f.Name }}")),
