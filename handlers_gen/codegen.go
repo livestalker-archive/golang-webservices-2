@@ -105,13 +105,35 @@ func (h *{{ $receiver }} ) handler{{ $point.Method }}(w http.ResponseWriter, r *
 	}
 	{{- end }}
 	// 3. заполнение структуры params
+	var vErr *ApiError
+	{{- range $ix, $f :=  $point.InParamFields }}
+	{{- if $f.CustomName }}
+	val{{ $f.Name }}, vErr := FillValue("{{ $f.CustomName }}", "{{ $f.Type }}", r)
+	if vErr != nil {
+		w.Header().Set("Content-Type", "application/json")
+		res := map[string]string{"error": vErr.Error(),}
+		body, _ := json.Marshal(res)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(vErr.HTTPStatus)
+		w.Write(body)
+		return
+	}
+	{{- else }}
+	val{{ $f.Name }}, vErr := FillValue("{{ $f.Name }}", "{{ $f.Type }}", r)
+	if vErr != nil {
+		w.Header().Set("Content-Type", "application/json")
+		res := map[string]string{"error": vErr.Error(),}
+		body, _ := json.Marshal(res)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(vErr.HTTPStatus)
+		w.Write(body)
+		return
+	}
+	{{- end }}
+	{{- end }}
 	params := {{ $point.InParam }}{
 		{{- range $ix, $f :=  $point.InParamFields }}
-		{{- if $f.CustomName }}
-		{{ $f.Name }}: FillValue("{{ $f.CustomName }}", "{{ $f.Type }}", r).({{ $f.Type }}),
-		{{- else }}
-		{{ $f.Name }}: FillValue("{{ $f.Name }}", "{{ $f.Type }}", r).({{ $f.Type }}),
-		{{- end }}
+		{{ $f.Name }}: val{{$f.Name}}.({{ $f.Type }}),
 		{{- end }}
 	}
 	// 4. валидирование параметров
@@ -152,14 +174,20 @@ func (h *{{ $receiver }} ) handler{{ $point.Method }}(w http.ResponseWriter, r *
 {{- end }}
 
 {{- end }}
-func FillValue(n, t string, r *http.Request) interface{}{
+func FillValue(n, t string, r *http.Request) (interface{}, *ApiError){
 	n = strings.ToLower(n)
 	val := r.FormValue(n)
 	if t == "int" {
-		res, _ := strconv.Atoi(val)
-		return res
+		res, err := strconv.Atoi(val)
+		if err != nil {
+			return 0, &ApiError{
+				HTTPStatus:http.StatusBadRequest,
+				Err:fmt.Errorf("%s must be %s", n, t),
+			}
+		}
+		return res, nil
 	}
-	return val
+	return val, nil
 }
 `))
 
@@ -168,6 +196,8 @@ func FillValue(n, t string, r *http.Request) interface{}{
 
 func Validate{{ $v.Name }}(param {{ $v.Name }}) *ApiError {
 	var e reflect.Value
+	var isReqErr bool
+	var reqErr *ApiError	
 	{{- range $ix, $f := $v.ParamFields }}
 	// validate {{ $f.Name }} field
 	{{- range $ix, $v := $f.Validators }}
@@ -176,10 +206,11 @@ func Validate{{ $v.Name }}(param {{ $v.Name }}) *ApiError {
 	// validate required status
 	e = reflect.ValueOf(param).FieldByName("{{ $f.Name }}")
 	if reflect.Zero(e.Type()).Interface() == e.Interface() {
-		return &ApiError{
+		reqErr = &ApiError{
 			HTTPStatus: http.StatusBadRequest,
 			Err: fmt.Errorf("%s must me not empty", strings.ToLower("{{ $f.Name }}")),
 		}
+		isReqErr = true
 	}
 	{{- end }}
 
@@ -198,16 +229,67 @@ func Validate{{ $v.Name }}(param {{ $v.Name }}) *ApiError {
 	if e.Interface().(int) < {{ $v.Value }} {
 		return &ApiError{
 			HTTPStatus: http.StatusBadRequest,
-			Err: fmt.Errorf("%s len must be >= %d", strings.ToLower("{{ $f.Name }}"), {{ $v.Value }}),
+			Err: fmt.Errorf("%s must be >= %d", strings.ToLower("{{ $f.Name }}"), {{ $v.Value }}),
 		}
 	}
 	{{- end }}
+	{{- end }}
+
+	{{- if eq $v.Name "max" }}
+	// validate max value
+	{{- if eq $f.Type "string" }}
+	e = reflect.ValueOf(param).FieldByName("{{ $f.Name }}")
+	if len(e.Interface().(string)) > {{ $v.Value }} {
+		return &ApiError{
+			HTTPStatus: http.StatusBadRequest,
+			Err: fmt.Errorf("%s len must be <= %d", strings.ToLower("{{ $f.Name }}"), {{ $v.Value }}),
+		}
+	}
+	{{- else }}
+	e = reflect.ValueOf(param).FieldByName("{{ $f.Name }}")
+	if e.Interface().(int) > {{ $v.Value }} {
+		return &ApiError{
+			HTTPStatus: http.StatusBadRequest,
+			Err: fmt.Errorf("%s must be <= %d", strings.ToLower("{{ $f.Name }}"), {{ $v.Value }}),
+		}
+	}
+	{{- end }}
+	{{- end }}
+
+	{{- if eq $v.Name "enum" }}
+	// validate enum value
+	enumVal := strings.Split("{{ $v.Value }}", "|")
+	e = reflect.ValueOf(param).FieldByName("{{ $f.Name }}")
+	var findVal bool
+	for _, el :=range enumVal {
+		if el == e.Interface().(string) {
+			findVal = true
+			break
+		}
+	}
+	if !findVal {
+		return &ApiError{
+			HTTPStatus: http.StatusBadRequest,
+			Err: fmt.Errorf("%s must be one of [%v]", strings.ToLower("{{ $f.Name }}"), strings.Join(enumVal, ", ")),
+		}
+	}
+	{{- end }}
+
+	{{- if eq $v.Name "default" }}
+	param.{{ $f.Name }} = "{{ $v.Value }}"
+	isReqErr = false
+	reqErr = nil
+	{{- else }}
+	if isReqErr {
+		return reqErr
+	}
 	{{- end }}
 
 	{{- end }}
 	{{- end }}
 	return nil
 }
+
 {{- end }}
 `))
 )
