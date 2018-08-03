@@ -64,6 +64,8 @@ func (h *{{ $receiver }} ) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 {{- range $ix, $point := $apiPoints }}
 func (h *{{ $receiver }} ) handler{{ $point.Method }}(w http.ResponseWriter, r *http.Request) {
+	// 1. проверка авторизации
+	// 2. проверки метода (GET/POST)
 	// заполнение структуры params
 	params := {{ $point.InParam }}{
 		{{- range $ix, $f :=  $point.InParamFields }}
@@ -74,6 +76,17 @@ func (h *{{ $receiver }} ) handler{{ $point.Method }}(w http.ResponseWriter, r *
 		{{- end }}
 		{{- end }}
 	}
+	{{- if $point.Json.Method }}
+	if r.Method != http.MethodPost {
+		w.Header().Set("Content-Type", "application/json")
+		res := map[string]string{"error": "bad method",}
+		body, _ := json.Marshal(res)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotAcceptable)
+		w.Write(body)
+		return
+	}
+	{{- end }}
 	// валидирование параметров
 	valErr := Validate{{ $point.InParam }}(params)
 	if valErr != nil {
