@@ -1,4 +1,4 @@
-package main
+package week1
 
 import (
 	"context"

@@ -1,4 +1,4 @@
-package main
+package week1
 
 import (
 	"encoding/json"
@@ -131,7 +131,6 @@ func TestMyApi(t *testing.T) {
 				},
 			},
 		},
-
 		Case{ // только POST
 			Path:   ApiUserCreate,
 			Method: http.MethodGet,
