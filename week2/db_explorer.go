@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"regexp"
 )
 
 type ExplorerSvc struct {
@@ -68,5 +69,12 @@ func (s *ExplorerSvc) ListAllTables(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *ExplorerSvc) TableRouter(w http.ResponseWriter, r *http.Request) {
-
+	tableName := regexp.MustCompile("^/([a-zA-Z0-9]+)")
+	m := tableName.FindStringSubmatch(r.URL.Path)
+	if _, ok := s.TablesNames[m[1]]; !ok {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		body, _ := json.Marshal(map[string]string{"error": "unknown table"})
+		w.Write(body)
+	}
 }
