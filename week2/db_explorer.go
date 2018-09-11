@@ -3,7 +3,9 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"reflect"
 	"regexp"
 )
 
@@ -55,6 +57,7 @@ func (s *ExplorerSvc) FillDBMeta() {
 func (s *ExplorerSvc) ListAllTables(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	res := make(map[string]map[string]interface{})
@@ -76,5 +79,45 @@ func (s *ExplorerSvc) TableRouter(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		body, _ := json.Marshal(map[string]string{"error": "unknown table"})
 		w.Write(body)
+		return
+	} else {
+		tn := m[1]
+		tableName = regexp.MustCompile("^/([a-zA-Z0-9]+)/([a-zA-Z0-9]+)")
+		m = tableName.FindStringSubmatch(r.URL.Path)
+		if m == nil {
+			// only table name
+			s.HandleTableRequest(w, r, tn)
+			return
+		} else {
+			// additional path part
+		}
+	}
+}
+
+func (s *ExplorerSvc) HandleTableRequest(w http.ResponseWriter, r *http.Request, tn string) {
+	if r.Method == http.MethodGet {
+		sqlExp := fmt.Sprintf("SELECT * FROM %s", tn)
+		//limit, ok := r.URL.Query()["limit"]
+		//offset, ok := r.URL.Query()["offset"]
+		rows, _ := s.db.Query(sqlExp)
+		cols, _ := rows.Columns()
+		colsTypes, _ := rows.ColumnTypes()
+		data := make([]interface{}, len(cols))
+		for i, el := range colsTypes {
+			data[i] = reflect.New(el.ScanType()).Interface()
+			fmt.Println(reflect.ValueOf(data[i]).Elem())
+		}
+		for rows.Next() {
+			rows.Scan(data...)
+			ConvertData(data, colsTypes)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		body, _ := json.Marshal(data)
+		w.Write(body)
+	}
+}
+func ConvertData(data []interface{}, types []*sql.ColumnType) {
+	for ix, _ := range data {
+		fmt.Printf("%v\n", types[ix])
 	}
 }
