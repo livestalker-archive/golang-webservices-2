@@ -97,27 +97,54 @@ func (s *ExplorerSvc) TableRouter(w http.ResponseWriter, r *http.Request) {
 func (s *ExplorerSvc) HandleTableRequest(w http.ResponseWriter, r *http.Request, tn string) {
 	if r.Method == http.MethodGet {
 		sqlExp := fmt.Sprintf("SELECT * FROM %s", tn)
-		//limit, ok := r.URL.Query()["limit"]
-		//offset, ok := r.URL.Query()["offset"]
+		limit, ok := r.URL.Query()["limit"]
+		if ok {
+			// possible SQL injection
+			sqlExp = fmt.Sprintf("%s LIMIT %s", sqlExp, limit[0])
+		}
+		offset, ok := r.URL.Query()["offset"]
+		if ok {
+			// possible SQL injection
+			sqlExp = fmt.Sprintf("%s OFFSET %s", sqlExp, offset[0])
+		}
 		rows, _ := s.db.Query(sqlExp)
 		cols, _ := rows.Columns()
 		colsTypes, _ := rows.ColumnTypes()
-		data := make([]interface{}, len(cols))
-		for i, el := range colsTypes {
-			data[i] = reflect.New(el.ScanType()).Interface()
-			fmt.Println(reflect.ValueOf(data[i]).Elem())
-		}
+		res := make(map[string]map[string]interface{})
+		res["response"] = make(map[string]interface{})
+		records := make([]interface{}, 0)
 		for rows.Next() {
+			data := CreateBlankData(len(cols), colsTypes)
 			rows.Scan(data...)
-			ConvertData(data, colsTypes)
+			records = append(records, CreateRecord(data, colsTypes))
 		}
+		res["response"]["records"] = records
 		w.Header().Set("Content-Type", "application/json")
-		body, _ := json.Marshal(data)
+		body, _ := json.Marshal(res)
 		w.Write(body)
 	}
 }
-func ConvertData(data []interface{}, types []*sql.ColumnType) {
-	for ix, _ := range data {
-		fmt.Printf("%v\n", types[ix])
+func CreateRecord(data []interface{}, types []*sql.ColumnType) map[string]interface{} {
+	record := make(map[string]interface{})
+	for ix, el := range types {
+		if reflect.TypeOf(data[ix]).Elem() == reflect.TypeOf(sql.RawBytes{}) {
+			if len(*data[ix].(*sql.RawBytes)) == 0 {
+				record[el.Name()] = nil
+			} else {
+				record[el.Name()] = string(*data[ix].(*sql.RawBytes))
+			}
+		} else {
+			record[el.Name()] = data[ix]
+		}
 	}
+	return record
+}
+
+func CreateBlankData(n int, types []*sql.ColumnType) []interface{} {
+	data := make([]interface{}, n)
+	for i, el := range types {
+		t := el.ScanType()
+		data[i] = reflect.New(t).Interface()
+	}
+	return data
 }
