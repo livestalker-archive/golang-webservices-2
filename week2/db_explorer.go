@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"reflect"
 	"regexp"
+	"strconv"
 )
 
 type ExplorerSvc struct {
@@ -90,6 +91,9 @@ func (s *ExplorerSvc) TableRouter(w http.ResponseWriter, r *http.Request) {
 			return
 		} else {
 			// additional path part
+			id, _ := strconv.Atoi(m[2])
+			s.HandleItemRequest(w, r, tn, id)
+			return
 		}
 	}
 }
@@ -124,6 +128,37 @@ func (s *ExplorerSvc) HandleTableRequest(w http.ResponseWriter, r *http.Request,
 		w.Write(body)
 	}
 }
+
+func (s *ExplorerSvc) HandleItemRequest(w http.ResponseWriter, r *http.Request, tn string, id int) {
+	if r.Method == http.MethodGet {
+		s.HandleGetItemRequest(w, r, tn, id)
+		return
+	}
+}
+
+func (s *ExplorerSvc) HandleGetItemRequest(w http.ResponseWriter, r *http.Request, tn string, id int) {
+	sqlExp := fmt.Sprintf("SELECT * FROM %s WHERE id=?", tn)
+	// We should use QueryRow
+	rows, _ := s.db.Query(sqlExp, id)
+	cols, _ := rows.Columns()
+	colsTypes, _ := rows.ColumnTypes()
+	data := CreateBlankData(len(cols), colsTypes)
+	if !rows.Next() {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		body, _ := json.Marshal(map[string]string{"error": "record not found"})
+		w.Write(body)
+		return
+	}
+	rows.Scan(data...)
+	res := make(map[string]map[string]interface{})
+	res["response"] = make(map[string]interface{})
+	res["response"]["record"] = CreateRecord(data, colsTypes)
+	w.Header().Set("Content-Type", "application/json")
+	body, _ := json.Marshal(res)
+	w.Write(body)
+}
+
 func CreateRecord(data []interface{}, types []*sql.ColumnType) map[string]interface{} {
 	record := make(map[string]interface{})
 	for ix, el := range types {
