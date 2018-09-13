@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"regexp"
 	"strconv"
+	"strings"
 )
 
 type ExplorerSvc struct {
@@ -17,7 +18,10 @@ type ExplorerSvc struct {
 }
 
 type DBTable struct {
-	Name string
+	Name   string
+	Fields []string
+	Null   map[string]bool
+	PK     string
 }
 
 func (s *ExplorerSvc) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -38,6 +42,7 @@ func NewDbExplorer(db *sql.DB) (http.Handler, error) {
 }
 
 func (s *ExplorerSvc) FillDBMeta() {
+	// table name
 	tables := make([]*DBTable, 0)
 	tablesNames := make(map[string]*DBTable)
 	rows, _ := s.db.Query("SHOW TABLES")
@@ -47,11 +52,34 @@ func (s *ExplorerSvc) FillDBMeta() {
 		if err != nil {
 			panic(err)
 		}
-		t := &DBTable{Name: tableName}
+		t := &DBTable{Name: tableName, Null: make(map[string]bool)}
 		tables = append(tables, t)
 		tablesNames[tableName] = t
 		s.Tables = tables
 		s.TablesNames = tablesNames
+	}
+	for _, el := range s.Tables {
+		name := el.Name
+		sqlExp := fmt.Sprintf("SHOW FULL COLUMNS FROM `%s`", name)
+		rows, _ := s.db.Query(sqlExp)
+		cols, _ := rows.Columns()
+		colsTypes, _ := rows.ColumnTypes()
+		for rows.Next() {
+			dataRaw := CreateBlankData(len(cols), colsTypes)
+			rows.Scan(dataRaw...)
+			data := CreateRecord(dataRaw, colsTypes)
+			el.Fields = append(el.Fields, data["Field"].(string))
+			if v, ok := data["Key"].(string); ok {
+				if v == "PRI" {
+					el.PK = data["Field"].(string)
+				}
+			}
+			if data["Null"].(string) == "NO" {
+				el.Null[data["Field"].(string)] = false
+			} else {
+				el.Null[data["Field"].(string)] = true
+			}
+		}
 	}
 }
 
@@ -126,12 +154,58 @@ func (s *ExplorerSvc) HandleTableRequest(w http.ResponseWriter, r *http.Request,
 		w.Header().Set("Content-Type", "application/json")
 		body, _ := json.Marshal(res)
 		w.Write(body)
+		return
+	} else if r.Method == http.MethodPut {
+		s.HandlePutTableRequest(w, r, tn)
+		return
 	}
+}
+
+func (s *ExplorerSvc) HandlePutTableRequest(w http.ResponseWriter, r *http.Request, tn string) {
+	data := make(map[string]interface{})
+	json.NewDecoder(r.Body).Decode(&data)
+	realFields := fieldList(s.TablesNames[tn], data)
+	values := valuesList(realFields, data)
+	plh := strings.Repeat("?,", len(realFields))
+	plh = strings.Trim(plh, ",")
+	// possible SQL injection
+	sqlExp := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", tn, strings.Join(realFields, ","), plh)
+	resSql, _ := s.db.Exec(sqlExp, values...)
+	lastID, _ := resSql.LastInsertId()
+	res := make(map[string]map[string]interface{})
+	res["response"] = make(map[string]interface{})
+	res["response"]["id"] = lastID
+	w.Header().Set("Content-Type", "application/json")
+	body, _ := json.Marshal(res)
+	w.Write(body)
+}
+
+func fieldList(table *DBTable, data map[string]interface{}) []string {
+	fields := make([]string, 0)
+	for _, el := range table.Fields {
+		if _, ok := data[el]; ok {
+			if el != table.PK {
+				fields = append(fields, el)
+			}
+		}
+	}
+	return fields
+}
+
+func valuesList(fields []string, data map[string]interface{}) []interface{} {
+	res := make([]interface{}, 0)
+	for _, el := range fields {
+		res = append(res, data[el])
+	}
+	return res
 }
 
 func (s *ExplorerSvc) HandleItemRequest(w http.ResponseWriter, r *http.Request, tn string, id int) {
 	if r.Method == http.MethodGet {
 		s.HandleGetItemRequest(w, r, tn, id)
+		return
+	} else if r.Method == http.MethodPost {
+		s.HandlePostItemRequest(w, r, tn, id)
 		return
 	}
 }
@@ -140,6 +214,7 @@ func (s *ExplorerSvc) HandleGetItemRequest(w http.ResponseWriter, r *http.Reques
 	sqlExp := fmt.Sprintf("SELECT * FROM %s WHERE id=?", tn)
 	// We should use QueryRow
 	rows, _ := s.db.Query(sqlExp, id)
+	defer rows.Close()
 	cols, _ := rows.Columns()
 	colsTypes, _ := rows.ColumnTypes()
 	data := CreateBlankData(len(cols), colsTypes)
@@ -159,11 +234,42 @@ func (s *ExplorerSvc) HandleGetItemRequest(w http.ResponseWriter, r *http.Reques
 	w.Write(body)
 }
 
+func (s *ExplorerSvc) HandlePostItemRequest(w http.ResponseWriter, r *http.Request, tn string, id int) {
+	sqlExp := fmt.Sprintf("UPDATE %s SET ", tn)
+	data := make(map[string]interface{})
+	json.NewDecoder(r.Body).Decode(&data)
+	realFields := fieldList(s.TablesNames[tn], data)
+	if _, ok := data[s.TablesNames[tn].PK]; ok {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		body, _ := json.Marshal(map[string]string{"error": fmt.Sprintf("field %s have invalid type", s.TablesNames[tn].PK)})
+		w.Write(body)
+		return
+	}
+	values := valuesList(realFields, data)
+	set := make([]string, 0)
+	for _, el := range realFields {
+		set = append(set, el+"=?")
+	}
+	sqlExp = sqlExp + strings.Join(set, ",") + " WHERE id=?"
+	values = append(values, id)
+	resSql, _ := s.db.Exec(sqlExp, values...)
+	affected, _ := resSql.RowsAffected()
+	res := make(map[string]map[string]interface{})
+	res["response"] = make(map[string]interface{})
+	res["response"]["updated"] = affected
+	w.Header().Set("Content-Type", "application/json")
+	body, _ := json.Marshal(res)
+	w.Write(body)
+}
+
 func CreateRecord(data []interface{}, types []*sql.ColumnType) map[string]interface{} {
 	record := make(map[string]interface{})
 	for ix, el := range types {
 		if reflect.TypeOf(data[ix]).Elem() == reflect.TypeOf(sql.RawBytes{}) {
-			if len(*data[ix].(*sql.RawBytes)) == 0 {
+			// TODO check nulable
+			n, _ := el.Nullable()
+			if len(*data[ix].(*sql.RawBytes)) == 0 && n {
 				record[el.Name()] = nil
 			} else {
 				record[el.Name()] = string(*data[ix].(*sql.RawBytes))
