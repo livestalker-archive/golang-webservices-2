@@ -186,13 +186,30 @@ func (s *ExplorerSvc) HandlePutTableRequest(w http.ResponseWriter, r *http.Reque
 	lastID, _ := resSql.LastInsertId()
 	res := make(map[string]map[string]interface{})
 	res["response"] = make(map[string]interface{})
-	res["response"]["id"] = lastID
+	res["response"][s.TablesNames[tn].PK] = lastID
 	w.Header().Set("Content-Type", "application/json")
 	body, _ := json.Marshal(res)
 	w.Write(body)
 }
 
 func fieldList(table *DBTable, data map[string]interface{}) []string {
+	fields := make([]string, 0)
+	for _, el := range table.Fields {
+		if _, ok := data[el]; ok {
+			if el != table.PK {
+				fields = append(fields, el)
+			}
+		} else {
+			if !table.Null[el] {
+				fields = append(fields, el)
+				data[el] = ""
+			}
+		}
+	}
+	return fields
+}
+
+func fieldList2(table *DBTable, data map[string]interface{}) []string {
 	fields := make([]string, 0)
 	for _, el := range table.Fields {
 		if _, ok := data[el]; ok {
@@ -219,11 +236,13 @@ func (s *ExplorerSvc) HandleItemRequest(w http.ResponseWriter, r *http.Request, 
 	} else if r.Method == http.MethodPost {
 		s.HandlePostItemRequest(w, r, tn, id)
 		return
+	} else if r.Method == http.MethodDelete {
+		s.HandleDeleteItemRequest(w, r, tn, id)
 	}
 }
 
 func (s *ExplorerSvc) HandleGetItemRequest(w http.ResponseWriter, r *http.Request, tn string, id int) {
-	sqlExp := fmt.Sprintf("SELECT * FROM %s WHERE id=?", tn)
+	sqlExp := fmt.Sprintf("SELECT * FROM %s WHERE %s=?", tn, s.TablesNames[tn].PK)
 	// We should use QueryRow
 	rows, _ := s.db.Query(sqlExp, id)
 	defer rows.Close()
@@ -252,7 +271,7 @@ func (s *ExplorerSvc) HandlePostItemRequest(w http.ResponseWriter, r *http.Reque
 	decoder := json.NewDecoder(r.Body)
 	//decoder.UseNumber()
 	decoder.Decode(&data)
-	realFields := fieldList(s.TablesNames[tn], data)
+	realFields := fieldList2(s.TablesNames[tn], data)
 	if _, ok := data[s.TablesNames[tn].PK]; ok {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
@@ -273,7 +292,7 @@ func (s *ExplorerSvc) HandlePostItemRequest(w http.ResponseWriter, r *http.Reque
 	for _, el := range realFields {
 		set = append(set, el+"=?")
 	}
-	sqlExp = sqlExp + strings.Join(set, ",") + " WHERE id=?"
+	sqlExp = sqlExp + strings.Join(set, ",") + fmt.Sprintf(" WHERE %s=?", s.TablesNames[tn].PK)
 	values = append(values, id)
 	resSql, _ := s.db.Exec(sqlExp, values...)
 	affected, _ := resSql.RowsAffected()
@@ -284,6 +303,19 @@ func (s *ExplorerSvc) HandlePostItemRequest(w http.ResponseWriter, r *http.Reque
 	body, _ := json.Marshal(res)
 	w.Write(body)
 }
+
+func (s *ExplorerSvc) HandleDeleteItemRequest(w http.ResponseWriter, r *http.Request, tn string, id int) {
+	sqlExp := fmt.Sprintf("DELETE FROM %s WHERE %s=? ", tn, s.TablesNames[tn].PK)
+	resSql, _ := s.db.Exec(sqlExp, id)
+	affected, _ := resSql.RowsAffected()
+	res := make(map[string]map[string]interface{})
+	res["response"] = make(map[string]interface{})
+	res["response"]["deleted"] = affected
+	w.Header().Set("Content-Type", "application/json")
+	body, _ := json.Marshal(res)
+	w.Write(body)
+}
+
 func validateValues(filds []string, values []interface{}, table *DBTable) error {
 	for ix, el := range filds {
 		ixx := findIndex(el, table)
