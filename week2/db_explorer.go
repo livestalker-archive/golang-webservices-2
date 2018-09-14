@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"reflect"
@@ -21,6 +22,7 @@ type DBTable struct {
 	Name   string
 	Fields []string
 	Null   map[string]bool
+	Types  []reflect.Kind
 	PK     string
 }
 
@@ -69,6 +71,16 @@ func (s *ExplorerSvc) FillDBMeta() {
 			rows.Scan(dataRaw...)
 			data := CreateRecord(dataRaw, colsTypes)
 			el.Fields = append(el.Fields, data["Field"].(string))
+			typeS := data["Type"].(string)
+			var typeR reflect.Kind
+			if strings.Contains(typeS, "int") {
+				typeR = reflect.Int
+			} else if strings.Contains(typeS, "float") {
+				typeR = reflect.Float64
+			} else {
+				typeR = reflect.String
+			}
+			el.Types = append(el.Types, typeR)
 			if v, ok := data["Key"].(string); ok {
 				if v == "PRI" {
 					el.PK = data["Field"].(string)
@@ -237,7 +249,9 @@ func (s *ExplorerSvc) HandleGetItemRequest(w http.ResponseWriter, r *http.Reques
 func (s *ExplorerSvc) HandlePostItemRequest(w http.ResponseWriter, r *http.Request, tn string, id int) {
 	sqlExp := fmt.Sprintf("UPDATE %s SET ", tn)
 	data := make(map[string]interface{})
-	json.NewDecoder(r.Body).Decode(&data)
+	decoder := json.NewDecoder(r.Body)
+	//decoder.UseNumber()
+	decoder.Decode(&data)
 	realFields := fieldList(s.TablesNames[tn], data)
 	if _, ok := data[s.TablesNames[tn].PK]; ok {
 		w.Header().Set("Content-Type", "application/json")
@@ -247,6 +261,14 @@ func (s *ExplorerSvc) HandlePostItemRequest(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	values := valuesList(realFields, data)
+	err := validateValues(realFields, values, s.TablesNames[tn])
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		body, _ := json.Marshal(map[string]string{"error": err.Error()})
+		w.Write(body)
+		return
+	}
 	set := make([]string, 0)
 	for _, el := range realFields {
 		set = append(set, el+"=?")
@@ -261,6 +283,30 @@ func (s *ExplorerSvc) HandlePostItemRequest(w http.ResponseWriter, r *http.Reque
 	w.Header().Set("Content-Type", "application/json")
 	body, _ := json.Marshal(res)
 	w.Write(body)
+}
+func validateValues(filds []string, values []interface{}, table *DBTable) error {
+	for ix, el := range filds {
+		ixx := findIndex(el, table)
+		if values[ix] != nil {
+			if table.Types[ixx] != reflect.Int && reflect.TypeOf(values[ix]).Kind() != table.Types[ixx] {
+				return errors.New(fmt.Sprintf("field %s have invalid type", table.Fields[ixx]))
+			}
+		} else {
+			if !table.Null[el] {
+				return errors.New(fmt.Sprintf("field %s have invalid type", table.Fields[ixx]))
+			}
+		}
+	}
+	return nil
+}
+
+func findIndex(name string, table *DBTable) int {
+	for ix, el := range table.Fields {
+		if name == el {
+			return ix
+		}
+	}
+	return 0
 }
 
 func CreateRecord(data []interface{}, types []*sql.ColumnType) map[string]interface{} {
