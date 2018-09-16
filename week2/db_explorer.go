@@ -143,13 +143,21 @@ func (s *ExplorerSvc) HandleTableRequest(w http.ResponseWriter, r *http.Request,
 		sqlExp := fmt.Sprintf("SELECT * FROM %s", tn)
 		limit, ok := r.URL.Query()["limit"]
 		if ok {
+			l, err := strconv.Atoi(limit[0])
+			if err != nil {
+				l = 1
+			}
 			// possible SQL injection
-			sqlExp = fmt.Sprintf("%s LIMIT %s", sqlExp, limit[0])
+			sqlExp = fmt.Sprintf("%s LIMIT %d", sqlExp, l)
 		}
 		offset, ok := r.URL.Query()["offset"]
 		if ok {
+			o, err := strconv.Atoi(offset[0])
+			if err != nil {
+				o = 1
+			}
 			// possible SQL injection
-			sqlExp = fmt.Sprintf("%s OFFSET %s", sqlExp, offset[0])
+			sqlExp = fmt.Sprintf("%s OFFSET %d", sqlExp, o)
 		}
 		rows, _ := s.db.Query(sqlExp)
 		cols, _ := rows.Columns()
