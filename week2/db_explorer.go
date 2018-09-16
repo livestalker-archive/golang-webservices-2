@@ -141,17 +141,20 @@ func (s *ExplorerSvc) TableRouter(w http.ResponseWriter, r *http.Request) {
 func (s *ExplorerSvc) HandleTableRequest(w http.ResponseWriter, r *http.Request, tn string) {
 	if r.Method == http.MethodGet {
 		sqlExp := fmt.Sprintf("SELECT * FROM %s", tn)
+		var isLimit bool
 		limit, ok := r.URL.Query()["limit"]
 		if ok {
 			l, err := strconv.Atoi(limit[0])
 			if err != nil {
-				l = 1
+				sqlExp = fmt.Sprintf("%s", sqlExp)
+			} else {
+				// possible SQL injection
+				sqlExp = fmt.Sprintf("%s LIMIT %d", sqlExp, l)
+				isLimit = true
 			}
-			// possible SQL injection
-			sqlExp = fmt.Sprintf("%s LIMIT %d", sqlExp, l)
 		}
 		offset, ok := r.URL.Query()["offset"]
-		if ok {
+		if ok && isLimit {
 			o, err := strconv.Atoi(offset[0])
 			if err != nil {
 				o = 1
