@@ -3,17 +3,13 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
+	"google.golang.org/grpc/codes"
 	"log"
-	"reflect"
 	"runtime"
-	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 )
 
@@ -166,6 +162,7 @@ func TestACL(t *testing.T) {
 	}
 }
 
+/*
 func TestLogging(t *testing.T) {
 	ctx, finish := context.WithCancel(context.Background())
 	err := StartMyMicroservice(ctx, listenAddr, ACLData)
@@ -401,7 +398,7 @@ func TestStat(t *testing.T) {
 
 	finish()
 }
-
+*/
 func __dummyLog() {
 	fmt.Println(1)
 	log.Println(1)
