@@ -7,9 +7,12 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
 	"log"
 	"net"
 	"regexp"
+	"sync"
+	"time"
 )
 
 type MyMicroservice struct {
@@ -17,6 +20,15 @@ type MyMicroservice struct {
 	ListenAddr string
 	ACL        string
 	ACLMap     map[string][]string
+	LogChan    chan *Event
+	LogWorkers map[int]*LogWorker
+	LWC        int
+	LWCM       *sync.Mutex
+}
+
+type LogWorker struct {
+	Cancel context.CancelFunc
+	C      chan *Event
 }
 
 // business logic
@@ -29,14 +41,41 @@ func NewBizLogic(svc *MyMicroservice) *BizLogic {
 }
 
 func (b *BizLogic) Check(ctx context.Context, in *Nothing) (*Nothing, error) {
+	md, _ := metadata.FromIncomingContext(ctx)
+	p, _ := peer.FromContext(ctx)
+	e := &Event{
+		Consumer:  md.Get("consumer")[0],
+		Method:    "/main.Biz/Check",
+		Host:      p.Addr.String(),
+		Timestamp: time.Now().UnixNano() / int64(time.Millisecond),
+	}
+	b.svc.LogChan <- e
 	return &Nothing{Dummy: true}, nil
 }
 
 func (b *BizLogic) Add(ctx context.Context, in *Nothing) (*Nothing, error) {
+	md, _ := metadata.FromIncomingContext(ctx)
+	p, _ := peer.FromContext(ctx)
+	e := &Event{
+		Consumer:  md.Get("consumer")[0],
+		Method:    "/main.Biz/Add",
+		Host:      p.Addr.String(),
+		Timestamp: time.Now().UnixNano() / int64(time.Millisecond),
+	}
+	b.svc.LogChan <- e
 	return &Nothing{Dummy: true}, nil
 }
 
 func (b *BizLogic) Test(ctx context.Context, in *Nothing) (*Nothing, error) {
+	md, _ := metadata.FromIncomingContext(ctx)
+	p, _ := peer.FromContext(ctx)
+	e := &Event{
+		Consumer:  md.Get("consumer")[0],
+		Method:    "/main.Biz/Test",
+		Host:      p.Addr.String(),
+		Timestamp: time.Now().UnixNano() / int64(time.Millisecond),
+	}
+	b.svc.LogChan <- e
 	return &Nothing{Dummy: true}, nil
 }
 
@@ -45,6 +84,33 @@ type AdminLogic struct {
 }
 
 func (b *AdminLogic) Logging(in *Nothing, s Admin_LoggingServer) error {
+	md, _ := metadata.FromIncomingContext(s.Context())
+	p, _ := peer.FromContext(s.Context())
+	e := &Event{
+		Consumer:  md.Get("consumer")[0],
+		Method:    "/main.Admin/Logging",
+		Host:      p.Addr.String(),
+		Timestamp: time.Now().UnixNano() / int64(time.Millisecond),
+	}
+	b.svc.LogChan <- e
+	time.Sleep(time.Millisecond * 1)
+	b.svc.LWCM.Lock()
+	ctx, cancel := context.WithCancel(context.Background())
+	worker := &LogWorker{Cancel: cancel, C: make(chan *Event, 1)}
+	b.svc.LogWorkers[b.svc.LWC] = worker
+	id := b.svc.LWC
+	b.svc.LWC++
+	b.svc.LWCM.Unlock()
+	for {
+		select {
+		case <-ctx.Done():
+			//delete(b.svc.LogWorkers, id)
+			log.Println("Finish logger: ", id)
+			return nil
+		case e := <-worker.C:
+			s.Send(e)
+		}
+	}
 	return nil
 }
 
@@ -71,12 +137,32 @@ func (svc *MyMicroservice) Start() error {
 	RegisterBizServer(server, NewBizLogic(svc))
 	RegisterAdminServer(server, NewAdminLogic(svc))
 	fmt.Println("starting server at ", svc.ListenAddr)
+	logCtx, cancel := context.WithCancel(context.Background())
 	go server.Serve(lis)
 	go func() {
 		select {
 		case <-svc.ctx.Done():
+			cancel()
 			server.GracefulStop()
 			return
+		}
+	}()
+	// Logging supervisor
+	go func() {
+		for {
+			select {
+			case <-logCtx.Done():
+				for _, v := range svc.LogWorkers {
+					v.Cancel()
+				}
+			case e := <-svc.LogChan:
+				fmt.Println(e)
+				svc.LWCM.Lock()
+				for _, v := range svc.LogWorkers {
+					v.C <- e
+				}
+				svc.LWCM.Unlock()
+			}
 		}
 	}()
 	return nil
@@ -123,7 +209,6 @@ func (svc *MyMicroservice) ACLStreamMidleware(
 	info *grpc.StreamServerInfo,
 	handler grpc.StreamHandler) error {
 	md, _ := metadata.FromIncomingContext(ss.Context())
-	fmt.Println(md)
 	acl := md.Get("consumer")
 	if len(acl) == 0 {
 		return grpc.Errorf(codes.Unauthenticated, "There are not ACL field")
@@ -144,12 +229,19 @@ func (svc *MyMicroservice) ACLStreamMidleware(
 			}
 		}
 	}
+	ctx := context.Background()
+	md = metadata.Pairs(
+		"api-req-id", "123",
+		"subsystem", "cli",
+	)
+	ctx = metadata.NewOutgoingContext(ctx, md)
 	err := handler(srv, ss)
 	return err
 }
 
 func StartMyMicroservice(ctx context.Context, listenAddr string, acl string) error {
-	svc := &MyMicroservice{ctx: ctx, ListenAddr: listenAddr, ACL: acl}
+	ch := make(chan *Event)
+	svc := &MyMicroservice{ctx: ctx, ListenAddr: listenAddr, ACL: acl, LogChan: ch, LogWorkers: make(map[int]*LogWorker), LWCM: &sync.Mutex{}}
 	err := svc.Start()
 	return err
 }
