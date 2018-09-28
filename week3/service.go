@@ -93,7 +93,7 @@ func (b *AdminLogic) Logging(in *Nothing, s Admin_LoggingServer) error {
 		Timestamp: time.Now().UnixNano() / int64(time.Millisecond),
 	}
 	b.svc.LogChan <- e
-	time.Sleep(time.Millisecond * 1)
+	time.Sleep(time.Microsecond * 1)
 	b.svc.LWCM.Lock()
 	ctx, cancel := context.WithCancel(context.Background())
 	worker := &LogWorker{Cancel: cancel, C: make(chan *Event, 1)}
@@ -104,7 +104,7 @@ func (b *AdminLogic) Logging(in *Nothing, s Admin_LoggingServer) error {
 	for {
 		select {
 		case <-ctx.Done():
-			//delete(b.svc.LogWorkers, id)
+			delete(b.svc.LogWorkers, id)
 			log.Println("Finish logger: ", id)
 			return nil
 		case e := <-worker.C:
@@ -138,23 +138,30 @@ func (svc *MyMicroservice) Start() error {
 	RegisterAdminServer(server, NewAdminLogic(svc))
 	fmt.Println("starting server at ", svc.ListenAddr)
 	logCtx, cancel := context.WithCancel(context.Background())
+	logGroup := &sync.WaitGroup{}
 	go server.Serve(lis)
 	go func() {
 		select {
 		case <-svc.ctx.Done():
 			cancel()
+			logGroup.Wait()
 			server.GracefulStop()
 			return
 		}
 	}()
 	// Logging supervisor
+	logGroup.Add(1)
 	go func() {
+		defer logGroup.Done()
 		for {
 			select {
 			case <-logCtx.Done():
+				svc.LWCM.Lock()
 				for _, v := range svc.LogWorkers {
 					v.Cancel()
 				}
+				svc.LWCM.Unlock()
+				return
 			case e := <-svc.LogChan:
 				fmt.Println(e)
 				svc.LWCM.Lock()

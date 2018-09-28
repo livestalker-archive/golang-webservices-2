@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"google.golang.org/grpc/codes"
 	"log"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -54,7 +56,6 @@ func getConsumerCtx(consumerName string) context.Context {
 	return metadata.NewOutgoingContext(ctx, md)
 }
 
-/*
 // старт-стоп сервера
 func TestServerStartStop(t *testing.T) {
 	ctx, finish := context.WithCancel(context.Background())
@@ -97,6 +98,7 @@ func TestServerLeak(t *testing.T) {
 		t.Fatalf("looks like you have goroutines leak: %+v", goroutinesStat)
 	}
 }
+
 // ACL (права на методы доступа) парсится корректно
 func TestACLParseError(t *testing.T) {
 	// finish'а тут нет потому что стартовать у вас ничего не должно если не получилось распаковать ACL
@@ -162,7 +164,6 @@ func TestACL(t *testing.T) {
 		t.Fatalf("ACL fail: expected Unauthenticated code, got %v", code)
 	}
 }
-*/
 func TestLogging(t *testing.T) {
 	ctx, finish := context.WithCancel(context.Background())
 	err := StartMyMicroservice(ctx, listenAddr, ACLData)
