@@ -38,7 +38,7 @@ type LogWorker struct {
 
 type StatWorker struct {
 	Cancel context.CancelFunc
-	C      chan *Stat
+	//C      chan *Stat
 }
 
 // business logic
@@ -125,6 +125,23 @@ func (b *AdminLogic) Logging(in *Nothing, s Admin_LoggingServer) error {
 }
 
 func (b *AdminLogic) Statistics(in *StatInterval, s Admin_StatisticsServer) error {
+	sec := in.IntervalSeconds
+	b.svc.SWCM.Lock()
+	ctx, cancel := context.WithCancel(context.Background())
+	worker := &StatWorker{Cancel: cancel}
+	b.svc.StatWorkers[b.svc.SWC] = worker
+	b.svc.SWC++
+	b.svc.SWCM.Unlock()
+	for {
+		t := time.NewTicker(time.Duration(sec) * time.Second)
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-t.C:
+			b.svc.CurrentStat.Timestamp = time.Now().UnixNano() / int64(time.Millisecond)
+			s.Send(b.svc.CurrentStat)
+		}
+	}
 	return nil
 }
 
@@ -196,6 +213,10 @@ func (svc *MyMicroservice) ACLMidleware(
 	handler grpc.UnaryHandler) (interface{}, error) {
 	md, _ := metadata.FromIncomingContext(ctx)
 	acl := md.Get("consumer")
+	if len(acl) != 0 {
+		svc.incStatByConsumer(acl[0])
+	}
+	svc.incStatByMethod(info.FullMethod)
 	if len(acl) == 0 {
 		return &Nothing{Dummy: true}, grpc.Errorf(codes.Unauthenticated, "There are not ACL field")
 	} else {
@@ -216,8 +237,6 @@ func (svc *MyMicroservice) ACLMidleware(
 		}
 	}
 	reply, err := handler(ctx, req)
-	svc.incStatByConsumer(acl[0])
-	svc.incStatByMethod(info.FullMethod)
 	return reply, err
 }
 
@@ -247,9 +266,15 @@ func (svc *MyMicroservice) ACLStreamMidleware(
 			}
 		}
 	}
+	svc.SWCM.Lock()
+	if svc.SWC != 0 {
+		if len(acl) != 0 {
+			svc.incStatByConsumer(acl[0])
+		}
+		svc.incStatByMethod(info.FullMethod)
+	}
+	svc.SWCM.Unlock()
 	err := handler(srv, ss)
-	svc.incStatByConsumer(acl[0])
-	svc.incStatByMethod(info.FullMethod)
 	return err
 }
 
