@@ -550,19 +550,29 @@ var fileDescriptor_a0b84a42fa06f626 = []byte{
 }
 
 type MyMicroservice struct {
-	ctx        context.Context
-	ListenAddr string
-	ACL        string
-	ACLMap     map[string][]string
-	LogChan    chan *Event
-	LogWorkers map[int]*LogWorker
-	LWC        int
-	LWCM       *sync.Mutex
+	ctx         context.Context
+	ListenAddr  string
+	ACL         string
+	ACLMap      map[string][]string
+	LogChan     chan *Event
+	LogWorkers  map[int]*LogWorker
+	LWC         int
+	LWCM        *sync.Mutex
+	StatWorkers map[int]*StatWorker
+	SWC         int
+	SWCM        *sync.Mutex
+	StatM       *sync.Mutex
+	CurrentStat map[int]*Stat
 }
 
 type LogWorker struct {
 	Cancel context.CancelFunc
 	C      chan *Event
+}
+
+type StatWorker struct {
+	Cancel context.CancelFunc
+	//C      chan *Stat
 }
 
 // business logic
@@ -649,6 +659,32 @@ func (b *AdminLogic) Logging(in *Nothing, s Admin_LoggingServer) error {
 }
 
 func (b *AdminLogic) Statistics(in *StatInterval, s Admin_StatisticsServer) error {
+	sec := in.IntervalSeconds
+	b.svc.SWCM.Lock()
+	ctx, cancel := context.WithCancel(context.Background())
+	worker := &StatWorker{Cancel: cancel}
+	b.svc.StatWorkers[b.svc.SWC] = worker
+	id := b.svc.SWC
+	b.svc.CurrentStat[b.svc.SWC] = &Stat{
+		ByMethod:   make(map[string]uint64),
+		ByConsumer: make(map[string]uint64),
+	}
+	b.svc.SWC++
+	b.svc.SWCM.Unlock()
+	for {
+		t := time.NewTicker(time.Duration(sec) * time.Second)
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-t.C:
+			b.svc.CurrentStat[id].Timestamp = time.Now().UnixNano() / int64(time.Millisecond)
+			s.Send(b.svc.CurrentStat[id])
+			b.svc.CurrentStat[id] = &Stat{
+				ByMethod:   make(map[string]uint64),
+				ByConsumer: make(map[string]uint64),
+			}
+		}
+	}
 	return nil
 }
 
@@ -697,7 +733,6 @@ func (svc *MyMicroservice) Start() error {
 				svc.LWCM.Unlock()
 				return
 			case e := <-svc.LogChan:
-				fmt.Println(e)
 				svc.LWCM.Lock()
 				for _, v := range svc.LogWorkers {
 					v.C <- e
@@ -721,6 +756,10 @@ func (svc *MyMicroservice) ACLMidleware(
 	handler grpc.UnaryHandler) (interface{}, error) {
 	md, _ := metadata.FromIncomingContext(ctx)
 	acl := md.Get("consumer")
+	if len(acl) != 0 {
+		svc.IncStatCons(acl[0])
+	}
+	svc.IncStatMeth(info.FullMethod)
 	if len(acl) == 0 {
 		return &Nothing{Dummy: true}, grpc.Errorf(codes.Unauthenticated, "There are not ACL field")
 	} else {
@@ -770,19 +809,68 @@ func (svc *MyMicroservice) ACLStreamMidleware(
 			}
 		}
 	}
-	ctx := context.Background()
-	md = metadata.Pairs(
-		"api-req-id", "123",
-		"subsystem", "cli",
-	)
-	ctx = metadata.NewOutgoingContext(ctx, md)
+	svc.SWCM.Lock()
+	if svc.SWC != 0 {
+		if len(acl) != 0 {
+			svc.IncStatCons(acl[0])
+		}
+		svc.IncStatMeth(info.FullMethod)
+	}
+	svc.SWCM.Unlock()
 	err := handler(srv, ss)
 	return err
 }
 
 func StartMyMicroservice(ctx context.Context, listenAddr string, acl string) error {
 	ch := make(chan *Event)
-	svc := &MyMicroservice{ctx: ctx, ListenAddr: listenAddr, ACL: acl, LogChan: ch, LogWorkers: make(map[int]*LogWorker), LWCM: &sync.Mutex{}}
+	svc := &MyMicroservice{
+		ctx:         ctx,
+		ListenAddr:  listenAddr,
+		ACL:         acl,
+		LogChan:     ch,
+		LogWorkers:  make(map[int]*LogWorker),
+		LWCM:        &sync.Mutex{},
+		StatWorkers: make(map[int]*StatWorker),
+		SWCM:        &sync.Mutex{},
+		StatM:       &sync.Mutex{},
+		CurrentStat: make(map[int]*Stat),
+		//CurrentStat: &Stat{
+		//	ByMethod:   make(map[string]uint64),
+		//	ByConsumer: make(map[string]uint64),
+		//},
+	}
 	err := svc.Start()
 	return err
+}
+
+func (svc *MyMicroservice) incStatByMethod(st *Stat, m string) {
+	svc.StatM.Lock()
+	if v, ok := st.ByMethod[m]; ok {
+		st.ByMethod[m] = v + 1
+	} else {
+		st.ByMethod[m] = 1
+	}
+	svc.StatM.Unlock()
+}
+
+func (svc *MyMicroservice) incStatByConsumer(st *Stat, m string) {
+	svc.StatM.Lock()
+	if v, ok := st.ByConsumer[m]; ok {
+		st.ByConsumer[m] = v + 1
+	} else {
+		st.ByConsumer[m] = 1
+	}
+	svc.StatM.Unlock()
+}
+
+func (svc *MyMicroservice) IncStatCons(m string) {
+	for _, v := range svc.CurrentStat {
+		svc.incStatByConsumer(v, m)
+	}
+}
+
+func (svc *MyMicroservice) IncStatMeth(m string) {
+	for _, v := range svc.CurrentStat {
+		svc.incStatByMethod(v, m)
+	}
 }

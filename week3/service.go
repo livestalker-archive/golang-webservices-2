@@ -145,6 +145,10 @@ func (b *AdminLogic) Statistics(in *StatInterval, s Admin_StatisticsServer) erro
 		case <-t.C:
 			b.svc.CurrentStat[id].Timestamp = time.Now().UnixNano() / int64(time.Millisecond)
 			s.Send(b.svc.CurrentStat[id])
+			b.svc.CurrentStat[id] = &Stat{
+				ByMethod:   make(map[string]uint64),
+				ByConsumer: make(map[string]uint64),
+			}
 		}
 	}
 	return nil
@@ -219,9 +223,9 @@ func (svc *MyMicroservice) ACLMidleware(
 	md, _ := metadata.FromIncomingContext(ctx)
 	acl := md.Get("consumer")
 	if len(acl) != 0 {
-		svc.incStatByConsumer(acl[0])
+		svc.IncStatCons(acl[0])
 	}
-	svc.incStatByMethod(info.FullMethod)
+	svc.IncStatMeth(info.FullMethod)
 	if len(acl) == 0 {
 		return &Nothing{Dummy: true}, grpc.Errorf(codes.Unauthenticated, "There are not ACL field")
 	} else {
@@ -274,9 +278,9 @@ func (svc *MyMicroservice) ACLStreamMidleware(
 	svc.SWCM.Lock()
 	if svc.SWC != 0 {
 		if len(acl) != 0 {
-			svc.incStatByConsumer(acl[0])
+			svc.IncStatCons(acl[0])
 		}
-		svc.incStatByMethod(info.FullMethod)
+		svc.IncStatMeth(info.FullMethod)
 	}
 	svc.SWCM.Unlock()
 	err := handler(srv, ss)
@@ -325,6 +329,14 @@ func (svc *MyMicroservice) incStatByConsumer(st *Stat, m string) {
 	svc.StatM.Unlock()
 }
 
-func (svc *MyMicroservice) IncStat() {
+func (svc *MyMicroservice) IncStatCons(m string) {
+	for _, v := range svc.CurrentStat {
+		svc.incStatByConsumer(v, m)
+	}
+}
 
+func (svc *MyMicroservice) IncStatMeth(m string) {
+	for _, v := range svc.CurrentStat {
+		svc.incStatByMethod(v, m)
+	}
 }
