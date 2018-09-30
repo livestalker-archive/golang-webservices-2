@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"google.golang.org/grpc/codes"
+	"io"
 	"log"
 	"reflect"
 	"runtime"
@@ -272,7 +273,6 @@ func TestLogging(t *testing.T) {
 	}
 }
 
-/*
 func TestStat(t *testing.T) {
 	ctx, finish := context.WithCancel(context.Background())
 	err := StartMyMicroservice(ctx, listenAddr, ACLData)
@@ -400,7 +400,7 @@ func TestStat(t *testing.T) {
 
 	finish()
 }
-*/
+
 func __dummyLog() {
 	fmt.Println(1)
 	log.Println(1)

@@ -16,19 +16,29 @@ import (
 )
 
 type MyMicroservice struct {
-	ctx        context.Context
-	ListenAddr string
-	ACL        string
-	ACLMap     map[string][]string
-	LogChan    chan *Event
-	LogWorkers map[int]*LogWorker
-	LWC        int
-	LWCM       *sync.Mutex
+	ctx         context.Context
+	ListenAddr  string
+	ACL         string
+	ACLMap      map[string][]string
+	LogChan     chan *Event
+	LogWorkers  map[int]*LogWorker
+	LWC         int
+	LWCM        *sync.Mutex
+	StatWorkers map[int]*StatWorker
+	SWC         int
+	SWCM        *sync.Mutex
+	StatM       *sync.Mutex
+	CurrentStat *Stat
 }
 
 type LogWorker struct {
 	Cancel context.CancelFunc
 	C      chan *Event
+}
+
+type StatWorker struct {
+	Cancel context.CancelFunc
+	C      chan *Stat
 }
 
 // business logic
@@ -163,7 +173,6 @@ func (svc *MyMicroservice) Start() error {
 				svc.LWCM.Unlock()
 				return
 			case e := <-svc.LogChan:
-				fmt.Println(e)
 				svc.LWCM.Lock()
 				for _, v := range svc.LogWorkers {
 					v.C <- e
@@ -207,6 +216,8 @@ func (svc *MyMicroservice) ACLMidleware(
 		}
 	}
 	reply, err := handler(ctx, req)
+	svc.incStatByConsumer(acl[0])
+	svc.incStatByMethod(info.FullMethod)
 	return reply, err
 }
 
@@ -236,19 +247,49 @@ func (svc *MyMicroservice) ACLStreamMidleware(
 			}
 		}
 	}
-	ctx := context.Background()
-	md = metadata.Pairs(
-		"api-req-id", "123",
-		"subsystem", "cli",
-	)
-	ctx = metadata.NewOutgoingContext(ctx, md)
 	err := handler(srv, ss)
+	svc.incStatByConsumer(acl[0])
+	svc.incStatByMethod(info.FullMethod)
 	return err
 }
 
 func StartMyMicroservice(ctx context.Context, listenAddr string, acl string) error {
 	ch := make(chan *Event)
-	svc := &MyMicroservice{ctx: ctx, ListenAddr: listenAddr, ACL: acl, LogChan: ch, LogWorkers: make(map[int]*LogWorker), LWCM: &sync.Mutex{}}
+	svc := &MyMicroservice{
+		ctx:         ctx,
+		ListenAddr:  listenAddr,
+		ACL:         acl,
+		LogChan:     ch,
+		LogWorkers:  make(map[int]*LogWorker),
+		LWCM:        &sync.Mutex{},
+		StatWorkers: make(map[int]*StatWorker),
+		SWCM:        &sync.Mutex{},
+		StatM:       &sync.Mutex{},
+		CurrentStat: &Stat{
+			ByMethod:   make(map[string]uint64),
+			ByConsumer: make(map[string]uint64),
+		},
+	}
 	err := svc.Start()
 	return err
+}
+
+func (svc *MyMicroservice) incStatByMethod(m string) {
+	svc.StatM.Lock()
+	if v, ok := svc.CurrentStat.ByMethod[m]; ok {
+		svc.CurrentStat.ByMethod[m] = v + 1
+	} else {
+		svc.CurrentStat.ByMethod[m] = 1
+	}
+	svc.StatM.Unlock()
+}
+
+func (svc *MyMicroservice) incStatByConsumer(m string) {
+	svc.StatM.Lock()
+	if v, ok := svc.CurrentStat.ByConsumer[m]; ok {
+		svc.CurrentStat.ByConsumer[m] = v + 1
+	} else {
+		svc.CurrentStat.ByConsumer[m] = 1
+	}
+	svc.StatM.Unlock()
 }
