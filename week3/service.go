@@ -28,7 +28,7 @@ type MyMicroservice struct {
 	SWC         int
 	SWCM        *sync.Mutex
 	StatM       *sync.Mutex
-	CurrentStat *Stat
+	CurrentStat map[int]*Stat
 }
 
 type LogWorker struct {
@@ -130,6 +130,11 @@ func (b *AdminLogic) Statistics(in *StatInterval, s Admin_StatisticsServer) erro
 	ctx, cancel := context.WithCancel(context.Background())
 	worker := &StatWorker{Cancel: cancel}
 	b.svc.StatWorkers[b.svc.SWC] = worker
+	id := b.svc.SWC
+	b.svc.CurrentStat[b.svc.SWC] = &Stat{
+		ByMethod:   make(map[string]uint64),
+		ByConsumer: make(map[string]uint64),
+	}
 	b.svc.SWC++
 	b.svc.SWCM.Unlock()
 	for {
@@ -138,8 +143,8 @@ func (b *AdminLogic) Statistics(in *StatInterval, s Admin_StatisticsServer) erro
 		case <-ctx.Done():
 			return nil
 		case <-t.C:
-			b.svc.CurrentStat.Timestamp = time.Now().UnixNano() / int64(time.Millisecond)
-			s.Send(b.svc.CurrentStat)
+			b.svc.CurrentStat[id].Timestamp = time.Now().UnixNano() / int64(time.Millisecond)
+			s.Send(b.svc.CurrentStat[id])
 		}
 	}
 	return nil
@@ -290,31 +295,36 @@ func StartMyMicroservice(ctx context.Context, listenAddr string, acl string) err
 		StatWorkers: make(map[int]*StatWorker),
 		SWCM:        &sync.Mutex{},
 		StatM:       &sync.Mutex{},
-		CurrentStat: &Stat{
-			ByMethod:   make(map[string]uint64),
-			ByConsumer: make(map[string]uint64),
-		},
+		CurrentStat: make(map[int]*Stat),
+		//CurrentStat: &Stat{
+		//	ByMethod:   make(map[string]uint64),
+		//	ByConsumer: make(map[string]uint64),
+		//},
 	}
 	err := svc.Start()
 	return err
 }
 
-func (svc *MyMicroservice) incStatByMethod(m string) {
+func (svc *MyMicroservice) incStatByMethod(st *Stat, m string) {
 	svc.StatM.Lock()
-	if v, ok := svc.CurrentStat.ByMethod[m]; ok {
-		svc.CurrentStat.ByMethod[m] = v + 1
+	if v, ok := st.ByMethod[m]; ok {
+		st.ByMethod[m] = v + 1
 	} else {
-		svc.CurrentStat.ByMethod[m] = 1
+		st.ByMethod[m] = 1
 	}
 	svc.StatM.Unlock()
 }
 
-func (svc *MyMicroservice) incStatByConsumer(m string) {
+func (svc *MyMicroservice) incStatByConsumer(st *Stat, m string) {
 	svc.StatM.Lock()
-	if v, ok := svc.CurrentStat.ByConsumer[m]; ok {
-		svc.CurrentStat.ByConsumer[m] = v + 1
+	if v, ok := st.ByConsumer[m]; ok {
+		st.ByConsumer[m] = v + 1
 	} else {
-		svc.CurrentStat.ByConsumer[m] = 1
+		st.ByConsumer[m] = 1
 	}
 	svc.StatM.Unlock()
+}
+
+func (svc *MyMicroservice) IncStat() {
+
 }
