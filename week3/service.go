@@ -10,6 +10,8 @@ import (
 	"log"
 	"net"
 	"regexp"
+	"sync"
+	"time"
 )
 
 // Microservice
@@ -17,6 +19,7 @@ type MyMicroservice struct {
 	ctx        context.Context
 	ListenAddr string
 	ACL        map[string][]string
+	StatAgents *StatAgents
 }
 
 func (svc *MyMicroservice) parseAcl(textAcl string) error {
@@ -51,6 +54,7 @@ func StartMyMicroservice(ctx context.Context, listenAddr string, acl string) err
 	svc := &MyMicroservice{
 		ctx:        ctx,
 		ListenAddr: listenAddr,
+		StatAgents: NewStatAgents(),
 	}
 	// unpack acl
 	err := svc.parseAcl(acl)
@@ -112,6 +116,18 @@ func (b *AdminLogic) Logging(in *Nothing, s Admin_LoggingServer) error {
 }
 
 func (b *AdminLogic) Statistics(in *StatInterval, s Admin_StatisticsServer) error {
+	sec := in.IntervalSeconds
+	sa := b.svc.StatAgents.AllocateNew()
+	t := sa.SetTimer(sec)
+	for {
+		select {
+		case <-sa.Ctx.Done():
+			return nil
+		case <-t.C:
+			s.Send(sa.GetStat())
+			sa.ResetStat()
+		}
+	}
 	return nil
 }
 
@@ -124,6 +140,10 @@ func (svc *MyMicroservice) UnaryMiddleware(
 	md, _ := metadata.FromIncomingContext(ctx)
 	acl := md.Get("consumer")
 	err := svc.checkAcl(acl, info.FullMethod)
+	svc.StatAgents.BroadcastIncByMethod(info.FullMethod)
+	if len(acl) > 0 {
+		svc.StatAgents.BroadcastIncByConsumer(acl[0])
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -139,9 +159,110 @@ func (svc *MyMicroservice) StreamMiddleware(
 	md, _ := metadata.FromIncomingContext(ss.Context())
 	acl := md.Get("consumer")
 	err := svc.checkAcl(acl, info.FullMethod)
+	svc.StatAgents.BroadcastIncByMethod(info.FullMethod)
+	if len(acl) > 0 {
+		svc.StatAgents.BroadcastIncByConsumer(acl[0])
+	}
 	if err != nil {
 		return err
 	}
 	err = handler(srv, ss)
 	return err
+}
+
+// Agents
+type StatAgents struct {
+	list []*StatAgent
+	sync.Mutex
+}
+
+func (sas *StatAgents) AllocateNew() *StatAgent {
+	sas.Lock()
+	sa := NewStatAgent()
+	sas.list = append(sas.list, sa)
+	sas.Unlock()
+	return sa
+}
+
+func (sas *StatAgents) BroadcastIncByMethod(method string) {
+	sas.Lock()
+	for _, el := range sas.list {
+		el.IncByMethod(method)
+	}
+	sas.Unlock()
+}
+
+func (sas *StatAgents) BroadcastIncByConsumer(method string) {
+	sas.Lock()
+	for _, el := range sas.list {
+		el.IncByConsumer(method)
+	}
+	sas.Unlock()
+}
+
+type StatAgent struct {
+	Stat   *Stat
+	Ctx    context.Context
+	Cancel context.CancelFunc
+	sync.Mutex
+}
+
+func (sa *StatAgent) ResetStat() {
+	sa.Lock()
+	sa.Stat = NewStat()
+	sa.Unlock()
+}
+
+func (sa *StatAgent) IncByMethod(method string) {
+	sa.Lock()
+	if v, ok := sa.Stat.ByMethod[method]; !ok {
+		sa.Stat.ByMethod[method] = 1
+	} else {
+		sa.Stat.ByMethod[method] = v + 1
+	}
+	sa.Unlock()
+}
+
+func (sa *StatAgent) IncByConsumer(method string) {
+	sa.Lock()
+	if v, ok := sa.Stat.ByConsumer[method]; !ok {
+		sa.Stat.ByConsumer[method] = 1
+	} else {
+		sa.Stat.ByConsumer[method] = v + 1
+	}
+	sa.Unlock()
+}
+
+func (sa *StatAgent) SetTimer(sec uint64) *time.Ticker {
+	t := time.NewTicker(time.Duration(sec) * time.Second)
+	return t
+}
+
+func (sa *StatAgent) GetStat() *Stat {
+	sa.Lock()
+	sa.Stat.Timestamp = time.Now().UnixNano() / int64(time.Millisecond)
+	sa.Unlock()
+	return sa.Stat
+}
+
+func NewStat() *Stat {
+	s := &Stat{
+		ByMethod:   make(map[string]uint64),
+		ByConsumer: make(map[string]uint64),
+	}
+	return s
+}
+
+func NewStatAgent() *StatAgent {
+	ctx, cancel := context.WithCancel(context.Background())
+	s := NewStat()
+	sa := &StatAgent{Stat: s, Ctx: ctx, Cancel: cancel}
+	return sa
+}
+
+func NewStatAgents() *StatAgents {
+	sas := &StatAgents{
+		list: make([]*StatAgent, 0),
+	}
+	return sas
 }
