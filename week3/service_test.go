@@ -8,6 +8,7 @@ import (
 	"log"
 	"reflect"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -165,7 +166,6 @@ func TestACL(t *testing.T) {
 	}
 }
 
-/*
 func TestLogging(t *testing.T) {
 	ctx, finish := context.WithCancel(context.Background())
 	err := StartMyMicroservice(ctx, listenAddr, ACLData)
@@ -273,7 +273,6 @@ func TestLogging(t *testing.T) {
 		t.Fatalf("logs2 dont match\nhave %+v\nwant %+v", logData2, expectedLogData2)
 	}
 }
-*/
 func TestStat(t *testing.T) {
 	ctx, finish := context.WithCancel(context.Background())
 	err := StartMyMicroservice(ctx, listenAddr, ACLData)
@@ -401,7 +400,6 @@ func TestStat(t *testing.T) {
 
 	finish()
 }
-
 func __dummyLog() {
 	fmt.Println(1)
 	log.Println(1)

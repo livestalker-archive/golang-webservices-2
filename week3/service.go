@@ -7,6 +7,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
 	"log"
 	"net"
 	"regexp"
@@ -20,6 +21,7 @@ type MyMicroservice struct {
 	ListenAddr string
 	ACL        map[string][]string
 	StatAgents *StatAgents
+	LogAgents  *LogAgents
 }
 
 func (svc *MyMicroservice) parseAcl(textAcl string) error {
@@ -55,6 +57,7 @@ func StartMyMicroservice(ctx context.Context, listenAddr string, acl string) err
 		ctx:        ctx,
 		ListenAddr: listenAddr,
 		StatAgents: NewStatAgents(),
+		LogAgents:  NewLogsAgents(),
 	}
 	// unpack acl
 	err := svc.parseAcl(acl)
@@ -75,6 +78,8 @@ func StartMyMicroservice(ctx context.Context, listenAddr string, acl string) err
 		select {
 		case <-svc.ctx.Done():
 			server.GracefulStop()
+			svc.StatAgents.StopAll()
+			svc.LogAgents.StopAll()
 			return
 		}
 	}()
@@ -112,6 +117,15 @@ func NewAdminLogic(svc *MyMicroservice) *AdminLogic {
 }
 
 func (b *AdminLogic) Logging(in *Nothing, s Admin_LoggingServer) error {
+	la := b.svc.LogAgents.AllocateNew()
+	for {
+		select {
+		case <-la.Ctx.Done():
+			return nil
+		case e := <-la.C:
+			s.Send(e)
+		}
+	}
 	return nil
 }
 
@@ -147,6 +161,9 @@ func (svc *MyMicroservice) UnaryMiddleware(
 	if err != nil {
 		return nil, err
 	}
+	p, _ := peer.FromContext(ctx)
+	e := NewEvent(p.Addr.String(), acl[0], info.FullMethod)
+	svc.LogAgents.BroadcastEvent(e)
 	reply, err := handler(ctx, req)
 	return reply, err
 }
@@ -166,11 +183,14 @@ func (svc *MyMicroservice) StreamMiddleware(
 	if err != nil {
 		return err
 	}
+	p, _ := peer.FromContext(ss.Context())
+	e := NewEvent(p.Addr.String(), acl[0], info.FullMethod)
+	svc.LogAgents.BroadcastEvent(e)
 	err = handler(srv, ss)
 	return err
 }
 
-// Agents
+// Stat Agents
 type StatAgents struct {
 	list []*StatAgent
 	sync.Mutex
@@ -196,6 +216,14 @@ func (sas *StatAgents) BroadcastIncByConsumer(method string) {
 	sas.Lock()
 	for _, el := range sas.list {
 		el.IncByConsumer(method)
+	}
+	sas.Unlock()
+}
+
+func (sas *StatAgents) StopAll() {
+	sas.Lock()
+	for _, el := range sas.list {
+		el.Cancel()
 	}
 	sas.Unlock()
 }
@@ -265,4 +293,64 @@ func NewStatAgents() *StatAgents {
 		list: make([]*StatAgent, 0),
 	}
 	return sas
+}
+
+// Log Agents
+type LogAgents struct {
+	list []*LogAgent
+	sync.Mutex
+}
+
+func (las *LogAgents) AllocateNew() *LogAgent {
+	las.Lock()
+	la := NewLogAgent()
+	las.list = append(las.list, la)
+	las.Unlock()
+	return la
+}
+
+func (las *LogAgents) BroadcastEvent(e *Event) {
+	las.Lock()
+	for _, el := range las.list {
+		el.C <- e
+	}
+	las.Unlock()
+}
+
+func (las *LogAgents) StopAll() {
+	las.Lock()
+	for _, el := range las.list {
+		el.Cancel()
+	}
+	las.Unlock()
+}
+
+type LogAgent struct {
+	Ctx    context.Context
+	Cancel context.CancelFunc
+	C      chan *Event
+	sync.Mutex
+}
+
+func NewEvent(host string, consumer string, method string) *Event {
+	e := &Event{
+		Consumer:  consumer,
+		Method:    method,
+		Host:      host,
+		Timestamp: time.Now().UnixNano() / int64(time.Millisecond),
+	}
+	return e
+}
+
+func NewLogAgent() *LogAgent {
+	ctx, cancel := context.WithCancel(context.Background())
+	la := &LogAgent{Ctx: ctx, Cancel: cancel, C: make(chan *Event)}
+	return la
+}
+
+func NewLogsAgents() *LogAgents {
+	las := &LogAgents{
+		list: make([]*LogAgent, 0),
+	}
+	return las
 }

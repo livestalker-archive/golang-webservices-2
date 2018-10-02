@@ -549,257 +549,31 @@ var fileDescriptor_a0b84a42fa06f626 = []byte{
 	0x00, 0x00,
 }
 
+// Microservice
 type MyMicroservice struct {
-	ctx         context.Context
-	ListenAddr  string
-	ACL         string
-	ACLMap      map[string][]string
-	LogChan     chan *Event
-	LogWorkers  map[int]*LogWorker
-	LWC         int
-	LWCM        *sync.Mutex
-	StatWorkers map[int]*StatWorker
-	SWC         int
-	SWCM        *sync.Mutex
-	StatM       *sync.Mutex
-	CurrentStat map[int]*Stat
+	ctx        context.Context
+	ListenAddr string
+	ACL        map[string][]string
+	StatAgents *StatAgents
+	LogAgents  *LogAgents
 }
 
-type LogWorker struct {
-	Cancel context.CancelFunc
-	C      chan *Event
+func (svc *MyMicroservice) parseAcl(textAcl string) error {
+	svc.ACL = make(map[string][]string)
+	return json.Unmarshal([]byte(textAcl), &svc.ACL)
 }
 
-type StatWorker struct {
-	Cancel context.CancelFunc
-	//C      chan *Stat
-}
-
-// business logic
-type BizLogic struct {
-	svc *MyMicroservice
-}
-
-func NewBizLogic(svc *MyMicroservice) *BizLogic {
-	return &BizLogic{svc: svc}
-}
-
-func (b *BizLogic) Check(ctx context.Context, in *Nothing) (*Nothing, error) {
-	md, _ := metadata.FromIncomingContext(ctx)
-	p, _ := peer.FromContext(ctx)
-	e := &Event{
-		Consumer:  md.Get("consumer")[0],
-		Method:    "/main.Biz/Check",
-		Host:      p.Addr.String(),
-		Timestamp: time.Now().UnixNano() / int64(time.Millisecond),
-	}
-	b.svc.LogChan <- e
-	return &Nothing{Dummy: true}, nil
-}
-
-func (b *BizLogic) Add(ctx context.Context, in *Nothing) (*Nothing, error) {
-	md, _ := metadata.FromIncomingContext(ctx)
-	p, _ := peer.FromContext(ctx)
-	e := &Event{
-		Consumer:  md.Get("consumer")[0],
-		Method:    "/main.Biz/Add",
-		Host:      p.Addr.String(),
-		Timestamp: time.Now().UnixNano() / int64(time.Millisecond),
-	}
-	b.svc.LogChan <- e
-	return &Nothing{Dummy: true}, nil
-}
-
-func (b *BizLogic) Test(ctx context.Context, in *Nothing) (*Nothing, error) {
-	md, _ := metadata.FromIncomingContext(ctx)
-	p, _ := peer.FromContext(ctx)
-	e := &Event{
-		Consumer:  md.Get("consumer")[0],
-		Method:    "/main.Biz/Test",
-		Host:      p.Addr.String(),
-		Timestamp: time.Now().UnixNano() / int64(time.Millisecond),
-	}
-	b.svc.LogChan <- e
-	return &Nothing{Dummy: true}, nil
-}
-
-type AdminLogic struct {
-	svc *MyMicroservice
-}
-
-func (b *AdminLogic) Logging(in *Nothing, s Admin_LoggingServer) error {
-	md, _ := metadata.FromIncomingContext(s.Context())
-	p, _ := peer.FromContext(s.Context())
-	e := &Event{
-		Consumer:  md.Get("consumer")[0],
-		Method:    "/main.Admin/Logging",
-		Host:      p.Addr.String(),
-		Timestamp: time.Now().UnixNano() / int64(time.Millisecond),
-	}
-	b.svc.LogChan <- e
-	time.Sleep(time.Microsecond * 1)
-	b.svc.LWCM.Lock()
-	ctx, cancel := context.WithCancel(context.Background())
-	worker := &LogWorker{Cancel: cancel, C: make(chan *Event, 1)}
-	b.svc.LogWorkers[b.svc.LWC] = worker
-	id := b.svc.LWC
-	b.svc.LWC++
-	b.svc.LWCM.Unlock()
-	for {
-		select {
-		case <-ctx.Done():
-			delete(b.svc.LogWorkers, id)
-			log.Println("Finish logger: ", id)
-			return nil
-		case e := <-worker.C:
-			s.Send(e)
-		}
-	}
-	return nil
-}
-
-func (b *AdminLogic) Statistics(in *StatInterval, s Admin_StatisticsServer) error {
-	sec := in.IntervalSeconds
-	b.svc.SWCM.Lock()
-	ctx, cancel := context.WithCancel(context.Background())
-	worker := &StatWorker{Cancel: cancel}
-	b.svc.StatWorkers[b.svc.SWC] = worker
-	id := b.svc.SWC
-	b.svc.CurrentStat[b.svc.SWC] = &Stat{
-		ByMethod:   make(map[string]uint64),
-		ByConsumer: make(map[string]uint64),
-	}
-	b.svc.SWC++
-	b.svc.SWCM.Unlock()
-	for {
-		t := time.NewTicker(time.Duration(sec) * time.Second)
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-t.C:
-			b.svc.CurrentStat[id].Timestamp = time.Now().UnixNano() / int64(time.Millisecond)
-			s.Send(b.svc.CurrentStat[id])
-			b.svc.CurrentStat[id] = &Stat{
-				ByMethod:   make(map[string]uint64),
-				ByConsumer: make(map[string]uint64),
-			}
-		}
-	}
-	return nil
-}
-
-func NewAdminLogic(svc *MyMicroservice) *AdminLogic {
-	return &AdminLogic{svc: svc}
-}
-
-func (svc *MyMicroservice) Start() error {
-	// unpack acl
-	err := svc.ParseACL()
-	if err != nil {
-		return err
-	}
-	// start listener
-	lis, err := net.Listen("tcp", svc.ListenAddr)
-	if err != nil {
-		log.Fatalln("cant listen port", err)
-	}
-	server := grpc.NewServer(grpc.UnaryInterceptor(svc.ACLMidleware), grpc.StreamInterceptor(svc.ACLStreamMidleware))
-	RegisterBizServer(server, NewBizLogic(svc))
-	RegisterAdminServer(server, NewAdminLogic(svc))
-	fmt.Println("starting server at ", svc.ListenAddr)
-	logCtx, cancel := context.WithCancel(context.Background())
-	logGroup := &sync.WaitGroup{}
-	go server.Serve(lis)
-	go func() {
-		select {
-		case <-svc.ctx.Done():
-			cancel()
-			logGroup.Wait()
-			server.GracefulStop()
-			return
-		}
-	}()
-	// Logging supervisor
-	logGroup.Add(1)
-	go func() {
-		defer logGroup.Done()
-		for {
-			select {
-			case <-logCtx.Done():
-				svc.LWCM.Lock()
-				for _, v := range svc.LogWorkers {
-					v.Cancel()
-				}
-				svc.LWCM.Unlock()
-				return
-			case e := <-svc.LogChan:
-				svc.LWCM.Lock()
-				for _, v := range svc.LogWorkers {
-					v.C <- e
-				}
-				svc.LWCM.Unlock()
-			}
-		}
-	}()
-	return nil
-}
-
-func (svc *MyMicroservice) ParseACL() error {
-	svc.ACLMap = make(map[string][]string)
-	return json.Unmarshal([]byte(svc.ACL), &svc.ACLMap)
-}
-
-func (svc *MyMicroservice) ACLMidleware(
-	ctx context.Context,
-	req interface{},
-	info *grpc.UnaryServerInfo,
-	handler grpc.UnaryHandler) (interface{}, error) {
-	md, _ := metadata.FromIncomingContext(ctx)
-	acl := md.Get("consumer")
-	if len(acl) != 0 {
-		svc.IncStatCons(acl[0])
-	}
-	svc.IncStatMeth(info.FullMethod)
-	if len(acl) == 0 {
-		return &Nothing{Dummy: true}, grpc.Errorf(codes.Unauthenticated, "There are not ACL field")
-	} else {
-		if v, ok := svc.ACLMap[acl[0]]; !ok {
-			return &Nothing{Dummy: true}, grpc.Errorf(codes.Unauthenticated, "Unknown consumer")
-		} else {
-			var allow bool
-			for _, rule := range v {
-				r := regexp.MustCompile(rule)
-				if r.MatchString(info.FullMethod) {
-					allow = true
-					break
-				}
-			}
-			if !allow {
-				return &Nothing{Dummy: true}, grpc.Errorf(codes.Unauthenticated, "Unauthenticated")
-			}
-		}
-	}
-	reply, err := handler(ctx, req)
-	return reply, err
-}
-
-func (svc *MyMicroservice) ACLStreamMidleware(
-	srv interface{},
-	ss grpc.ServerStream,
-	info *grpc.StreamServerInfo,
-	handler grpc.StreamHandler) error {
-	md, _ := metadata.FromIncomingContext(ss.Context())
-	acl := md.Get("consumer")
+func (svc *MyMicroservice) checkAcl(acl []string, method string) error {
 	if len(acl) == 0 {
 		return grpc.Errorf(codes.Unauthenticated, "There are not ACL field")
 	} else {
-		if v, ok := svc.ACLMap[acl[0]]; !ok {
+		if v, ok := svc.ACL[acl[0]]; !ok {
 			return grpc.Errorf(codes.Unauthenticated, "Unknown consumer")
 		} else {
 			var allow bool
 			for _, rule := range v {
 				r := regexp.MustCompile(rule)
-				if r.MatchString(info.FullMethod) {
+				if r.MatchString(method) {
 					allow = true
 					break
 				}
@@ -809,68 +583,308 @@ func (svc *MyMicroservice) ACLStreamMidleware(
 			}
 		}
 	}
-	svc.SWCM.Lock()
-	if svc.SWC != 0 {
-		if len(acl) != 0 {
-			svc.IncStatCons(acl[0])
-		}
-		svc.IncStatMeth(info.FullMethod)
-	}
-	svc.SWCM.Unlock()
-	err := handler(srv, ss)
-	return err
+	return nil
 }
 
 func StartMyMicroservice(ctx context.Context, listenAddr string, acl string) error {
-	ch := make(chan *Event)
 	svc := &MyMicroservice{
-		ctx:         ctx,
-		ListenAddr:  listenAddr,
-		ACL:         acl,
-		LogChan:     ch,
-		LogWorkers:  make(map[int]*LogWorker),
-		LWCM:        &sync.Mutex{},
-		StatWorkers: make(map[int]*StatWorker),
-		SWCM:        &sync.Mutex{},
-		StatM:       &sync.Mutex{},
-		CurrentStat: make(map[int]*Stat),
-		//CurrentStat: &Stat{
-		//	ByMethod:   make(map[string]uint64),
-		//	ByConsumer: make(map[string]uint64),
-		//},
+		ctx:        ctx,
+		ListenAddr: listenAddr,
+		StatAgents: NewStatAgents(),
+		LogAgents:  NewLogsAgents(),
 	}
-	err := svc.Start()
+	// unpack acl
+	err := svc.parseAcl(acl)
+	if err != nil {
+		return err
+	}
+	// start listener
+	lis, err := net.Listen("tcp", svc.ListenAddr)
+	if err != nil {
+		log.Fatalln("cant listen port", err)
+	}
+	server := grpc.NewServer(grpc.UnaryInterceptor(svc.UnaryMiddleware), grpc.StreamInterceptor(svc.StreamMiddleware))
+	RegisterBizServer(server, NewBizLogic(svc))
+	RegisterAdminServer(server, NewAdminLogic(svc))
+	fmt.Println("starting server at ", svc.ListenAddr)
+	go server.Serve(lis)
+	go func() {
+		select {
+		case <-svc.ctx.Done():
+			server.GracefulStop()
+			svc.StatAgents.StopAll()
+			svc.LogAgents.StopAll()
+			return
+		}
+	}()
+	return nil
+}
+
+// Business logic
+type BizLogic struct {
+	svc *MyMicroservice
+}
+
+func NewBizLogic(svc *MyMicroservice) *BizLogic {
+	return &BizLogic{svc: svc}
+}
+
+func (b *BizLogic) Check(ctx context.Context, in *Nothing) (*Nothing, error) {
+	return &Nothing{Dummy: true}, nil
+}
+
+func (b *BizLogic) Add(ctx context.Context, in *Nothing) (*Nothing, error) {
+	return &Nothing{Dummy: true}, nil
+}
+
+func (b *BizLogic) Test(ctx context.Context, in *Nothing) (*Nothing, error) {
+	return &Nothing{Dummy: true}, nil
+}
+
+// Admin logic
+type AdminLogic struct {
+	svc *MyMicroservice
+}
+
+func NewAdminLogic(svc *MyMicroservice) *AdminLogic {
+	return &AdminLogic{svc: svc}
+}
+
+func (b *AdminLogic) Logging(in *Nothing, s Admin_LoggingServer) error {
+	la := b.svc.LogAgents.AllocateNew()
+	for {
+		select {
+		case <-la.Ctx.Done():
+			return nil
+		case e := <-la.C:
+			s.Send(e)
+		}
+	}
+	return nil
+}
+
+func (b *AdminLogic) Statistics(in *StatInterval, s Admin_StatisticsServer) error {
+	sec := in.IntervalSeconds
+	sa := b.svc.StatAgents.AllocateNew()
+	t := sa.SetTimer(sec)
+	for {
+		select {
+		case <-sa.Ctx.Done():
+			return nil
+		case <-t.C:
+			s.Send(sa.GetStat())
+			sa.ResetStat()
+		}
+	}
+	return nil
+}
+
+// Middleware
+func (svc *MyMicroservice) UnaryMiddleware(
+	ctx context.Context,
+	req interface{},
+	info *grpc.UnaryServerInfo,
+	handler grpc.UnaryHandler) (interface{}, error) {
+	md, _ := metadata.FromIncomingContext(ctx)
+	acl := md.Get("consumer")
+	err := svc.checkAcl(acl, info.FullMethod)
+	svc.StatAgents.BroadcastIncByMethod(info.FullMethod)
+	if len(acl) > 0 {
+		svc.StatAgents.BroadcastIncByConsumer(acl[0])
+	}
+	if err != nil {
+		return nil, err
+	}
+	p, _ := peer.FromContext(ctx)
+	e := NewEvent(p.Addr.String(), acl[0], info.FullMethod)
+	svc.LogAgents.BroadcastEvent(e)
+	reply, err := handler(ctx, req)
+	return reply, err
+}
+
+func (svc *MyMicroservice) StreamMiddleware(
+	srv interface{},
+	ss grpc.ServerStream,
+	info *grpc.StreamServerInfo,
+	handler grpc.StreamHandler) error {
+	md, _ := metadata.FromIncomingContext(ss.Context())
+	acl := md.Get("consumer")
+	err := svc.checkAcl(acl, info.FullMethod)
+	svc.StatAgents.BroadcastIncByMethod(info.FullMethod)
+	if len(acl) > 0 {
+		svc.StatAgents.BroadcastIncByConsumer(acl[0])
+	}
+	if err != nil {
+		return err
+	}
+	p, _ := peer.FromContext(ss.Context())
+	e := NewEvent(p.Addr.String(), acl[0], info.FullMethod)
+	svc.LogAgents.BroadcastEvent(e)
+	err = handler(srv, ss)
 	return err
 }
 
-func (svc *MyMicroservice) incStatByMethod(st *Stat, m string) {
-	svc.StatM.Lock()
-	if v, ok := st.ByMethod[m]; ok {
-		st.ByMethod[m] = v + 1
+// Stat Agents
+type StatAgents struct {
+	list []*StatAgent
+	sync.Mutex
+}
+
+func (sas *StatAgents) AllocateNew() *StatAgent {
+	sas.Lock()
+	sa := NewStatAgent()
+	sas.list = append(sas.list, sa)
+	sas.Unlock()
+	return sa
+}
+
+func (sas *StatAgents) BroadcastIncByMethod(method string) {
+	sas.Lock()
+	for _, el := range sas.list {
+		el.IncByMethod(method)
+	}
+	sas.Unlock()
+}
+
+func (sas *StatAgents) BroadcastIncByConsumer(method string) {
+	sas.Lock()
+	for _, el := range sas.list {
+		el.IncByConsumer(method)
+	}
+	sas.Unlock()
+}
+
+func (sas *StatAgents) StopAll() {
+	sas.Lock()
+	for _, el := range sas.list {
+		el.Cancel()
+	}
+	sas.Unlock()
+}
+
+type StatAgent struct {
+	Stat   *Stat
+	Ctx    context.Context
+	Cancel context.CancelFunc
+	sync.Mutex
+}
+
+func (sa *StatAgent) ResetStat() {
+	sa.Lock()
+	sa.Stat = NewStat()
+	sa.Unlock()
+}
+
+func (sa *StatAgent) IncByMethod(method string) {
+	sa.Lock()
+	if v, ok := sa.Stat.ByMethod[method]; !ok {
+		sa.Stat.ByMethod[method] = 1
 	} else {
-		st.ByMethod[m] = 1
+		sa.Stat.ByMethod[method] = v + 1
 	}
-	svc.StatM.Unlock()
+	sa.Unlock()
 }
 
-func (svc *MyMicroservice) incStatByConsumer(st *Stat, m string) {
-	svc.StatM.Lock()
-	if v, ok := st.ByConsumer[m]; ok {
-		st.ByConsumer[m] = v + 1
+func (sa *StatAgent) IncByConsumer(method string) {
+	sa.Lock()
+	if v, ok := sa.Stat.ByConsumer[method]; !ok {
+		sa.Stat.ByConsumer[method] = 1
 	} else {
-		st.ByConsumer[m] = 1
+		sa.Stat.ByConsumer[method] = v + 1
 	}
-	svc.StatM.Unlock()
+	sa.Unlock()
 }
 
-func (svc *MyMicroservice) IncStatCons(m string) {
-	for _, v := range svc.CurrentStat {
-		svc.incStatByConsumer(v, m)
-	}
+func (sa *StatAgent) SetTimer(sec uint64) *time.Ticker {
+	t := time.NewTicker(time.Duration(sec) * time.Second)
+	return t
 }
 
-func (svc *MyMicroservice) IncStatMeth(m string) {
-	for _, v := range svc.CurrentStat {
-		svc.incStatByMethod(v, m)
+func (sa *StatAgent) GetStat() *Stat {
+	sa.Lock()
+	sa.Stat.Timestamp = time.Now().UnixNano() / int64(time.Millisecond)
+	sa.Unlock()
+	return sa.Stat
+}
+
+func NewStat() *Stat {
+	s := &Stat{
+		ByMethod:   make(map[string]uint64),
+		ByConsumer: make(map[string]uint64),
 	}
+	return s
+}
+
+func NewStatAgent() *StatAgent {
+	ctx, cancel := context.WithCancel(context.Background())
+	s := NewStat()
+	sa := &StatAgent{Stat: s, Ctx: ctx, Cancel: cancel}
+	return sa
+}
+
+func NewStatAgents() *StatAgents {
+	sas := &StatAgents{
+		list: make([]*StatAgent, 0),
+	}
+	return sas
+}
+
+// Log Agents
+type LogAgents struct {
+	list []*LogAgent
+	sync.Mutex
+}
+
+func (las *LogAgents) AllocateNew() *LogAgent {
+	las.Lock()
+	la := NewLogAgent()
+	las.list = append(las.list, la)
+	las.Unlock()
+	return la
+}
+
+func (las *LogAgents) BroadcastEvent(e *Event) {
+	las.Lock()
+	for _, el := range las.list {
+		el.C <- e
+	}
+	las.Unlock()
+}
+
+func (las *LogAgents) StopAll() {
+	las.Lock()
+	for _, el := range las.list {
+		el.Cancel()
+	}
+	las.Unlock()
+}
+
+type LogAgent struct {
+	Ctx    context.Context
+	Cancel context.CancelFunc
+	C      chan *Event
+	sync.Mutex
+}
+
+func NewEvent(host string, consumer string, method string) *Event {
+	e := &Event{
+		Consumer:  consumer,
+		Method:    method,
+		Host:      host,
+		Timestamp: time.Now().UnixNano() / int64(time.Millisecond),
+	}
+	return e
+}
+
+func NewLogAgent() *LogAgent {
+	ctx, cancel := context.WithCancel(context.Background())
+	la := &LogAgent{Ctx: ctx, Cancel: cancel, C: make(chan *Event)}
+	return la
+}
+
+func NewLogsAgents() *LogAgents {
+	las := &LogAgents{
+		list: make([]*LogAgent, 0),
+	}
+	return las
 }
