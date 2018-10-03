@@ -16,7 +16,6 @@ type IDBlock struct {
 	ID int
 }
 
-/*
 func TestSimple(t *testing.T) {
 	expected := &Simple{
 		ID:       42,
@@ -39,7 +38,7 @@ func TestSimple(t *testing.T) {
 		t.Errorf("results not match\nGot:\n%#v\nExpected:\n%#v", result, expected)
 	}
 }
-*/
+
 type Complex struct {
 	SubSimple  Simple
 	ManySimple []Simple
@@ -74,8 +73,6 @@ func TestComplex(t *testing.T) {
 		t.Errorf("results not match\nGot:\n%#v\nExpected:\n%#v", result, expected)
 	}
 }
-
-/*
 func TestSlice(t *testing.T) {
 	smpl := Simple{
 		ID:       42,
@@ -162,4 +159,3 @@ func TestErrors(t *testing.T) {
 		}
 	}
 }
-*/
